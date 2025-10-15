@@ -14,30 +14,9 @@ jobs:
       matrix:
         compiler: [gcc, clang]
         kernel:
-          - name: linux-6.1
-            id: linux-6.1
-            archive: 'https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.tar.xz https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.1.tar.xz'
-            config: defconfig
-          - name: linux-6.6
-            id: linux-6.6
-            archive: 'https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.tar.xz https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.1.tar.xz'
-            config: defconfig
-          - name: linux-6.10
-            id: linux-6.10
-            archive: 'https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.10.tar.xz https://cdn.kernel.org/pub/linux/kernel/v6.x/testing/linux-6.10-rc7.tar.xz'
-            config: defconfig
-          - name: linux-6.12-rc
-            id: linux-6.12-rc
-            archive: 'https://cdn.kernel.org/pub/linux/kernel/v6.x/testing/linux-6.12-rc2.tar.xz https://cdn.kernel.org/pub/linux/kernel/v6.x/testing/linux-6.12-rc1.tar.xz'
-            config: defconfig
-          - name: linux-6.14-atlant
-            id: linux-6.14-atlant
-            archive: 'https://cdn.kernel.org/pub/linux/kernel/v6.x/testing/linux-6.14-rc1.tar.xz https://cdn.kernel.org/pub/linux/kernel/next/linux-next.tar.xz'
-            config: defconfig
-            patches: 'ci/patches/localversion-atlant.patch'
           - name: linux-6.17-aya
             id: linux-6.17-aya
-            archive: 'https://cdn.kernel.org/pub/linux/kernel/next/linux-next.tar.xz https://cdn.kernel.org/pub/linux/kernel/v6.x/testing/linux-6.17-rc1.tar.xz'
+            archive: 'https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.17.3.tar.xz'
             config: defconfig
             patches: 'ci/patches/localversion-aya617.patch'
     steps:
