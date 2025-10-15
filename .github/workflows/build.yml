@@ -26,7 +26,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential bc flex bison libssl-dev libelf-dev dwarves \
+            build-essential bc flex bison libssl-dev llvm libelf-dev dwarves \
             clang lld rsync cpio kmod wget xz-utils patch
 
       - name: Build module
