@@ -91,7 +91,8 @@ build_aufs_module() {
 main() {
   setup_compiler
   local tree
-  tree=$(fetch_kernel "${workdir}")   # stdout теперь = ТОЛЬКО путь
+    tree=$(fetch_kernel "${workdir}" | tail -n1)
+
   apply_patches "${tree}"
   prepare_kernel "${tree}"
 
