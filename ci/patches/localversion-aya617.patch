@@ -1,11 +1,10 @@
 --- a/Makefile
 +++ b/Makefile
-@@ -2,7 +2,7 @@
+@@ -2,6 +2,6 @@
  VERSION = 6
  PATCHLEVEL = 17
  SUBLEVEL = 3
 -EXTRAVERSION =
 +EXTRAVERSION = -aya617
- NAME = Hacked Raccoon
+ NAME = Baby Opossum Posse
 
- # *DOCUMENTATION*
