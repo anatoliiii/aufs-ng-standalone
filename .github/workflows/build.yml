@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest  # хочешь стабильность — закрепи: ubuntu-24.04
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -19,17 +19,12 @@ jobs:
             archive: 'https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.17.3.tar.xz'
             config: defconfig
             patches: 'ci/patches/localversion-aya617.patch'
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential bc flex bison libssl-dev libelf-dev dwarves \
-            clang lld llvm curl xz-utils patch
-
+          sudo apt-get install -y build-essential bc flex wget bison libssl-dev libelf-dev dwarves clang lld rsync cpio kmod
       - name: Build module
         env:
           ARTIFACT_ROOT: ${{ github.workspace }}/artifacts
@@ -37,13 +32,10 @@ jobs:
           COMPILER: ${{ matrix.compiler }}
           KERNEL_CONFIG: ${{ matrix.kernel.config }}
           KERNEL_ARCHIVE_CANDIDATES: ${{ matrix.kernel.archive }}
-          KERNEL_GIT_REPO: ${{ matrix.kernel.git_repo || '' }}
-          KERNEL_GIT_REF: ${{ matrix.kernel.git_ref || '' }}
-          KERNEL_PATCHES: ${{ matrix.kernel.patches || '' }}
+          KERNEL_PATCHES: ${{ matrix.kernel.patches }}
         run: |
           ci/build-module.sh | tee build-${{ matrix.kernel.id }}-${{ matrix.compiler }}.log
-
-      - name: Upload artifacts
+      - name: Upload artefacts
         uses: actions/upload-artifact@v4
         with:
           name: aufs-${{ matrix.kernel.id }}-${{ matrix.compiler }}
