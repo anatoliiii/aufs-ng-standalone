@@ -22,12 +22,79 @@
 
 #include <linux/dcache.h>
 #include <linux/fsnotify.h>
+#include <linux/version.h>
 #include <linux/mnt_namespace.h>
 #include <linux/namei.h>
 #include <linux/nsproxy.h>
 #include <linux/security.h>
 #include <linux/splice.h>
 #include "aufs.h"
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 16, 0)
+
+#ifndef QSTR_LEN
+#define QSTR_LEN(name, len) (struct qstr)QSTR_INIT(name, len)
+#endif
+
+static inline struct dentry *au_lookup_noperm_unlocked(const char *name,
+                                                      int len,
+                                                      struct dentry *parent)
+{
+        return lookup_one_len_unlocked(name, parent, len);
+}
+
+static inline struct dentry *au_lookup_noperm(const char *name, int len,
+                                             struct dentry *parent)
+{
+        return lookup_one_len(name, parent, len);
+}
+
+static inline struct dentry *au_vfs_mkdir(struct mnt_idmap *idmap,
+                                          struct inode *dir,
+                                          struct dentry *dentry,
+                                          umode_t mode)
+{
+        int err = vfs_mkdir(idmap, dir, dentry, mode);
+
+        return err ? ERR_PTR(err) : NULL;
+}
+
+static inline int au_fsnotify_truncate_perm(const struct path *path,
+                                            loff_t length)
+{
+        return 0;
+}
+
+#else
+
+static inline struct dentry *au_lookup_noperm_unlocked(const char *name,
+                                                      int len,
+                                                      struct dentry *parent)
+{
+        return lookup_noperm_unlocked(&QSTR_LEN(name, len), parent);
+}
+
+static inline struct dentry *au_lookup_noperm(const char *name, int len,
+                                             struct dentry *parent)
+{
+        return lookup_noperm(&QSTR_LEN(name, len), parent);
+}
+
+static inline struct dentry *au_vfs_mkdir(struct mnt_idmap *idmap,
+                                          struct inode *dir,
+                                          struct dentry *dentry,
+                                          umode_t mode)
+{
+        return vfs_mkdir(idmap, dir, dentry, mode);
+}
+
+static inline int au_fsnotify_truncate_perm(const struct path *path,
+                                            loff_t length)
+{
+        return fsnotify_truncate_perm(path, length);
+}
+
+#endif
 
 #ifdef CONFIG_AUFS_BR_FUSE
 int vfsub_test_mntns(struct vfsmount *mnt, struct super_block *h_sb)
@@ -222,8 +289,7 @@ struct dentry *vfsub_lookup_one_len_unlocked(const char *name,
 {
 	struct path path;
 
-       path.dentry = lookup_noperm_unlocked(&QSTR_LEN(name, len),
-                                            ppath->dentry);
+        path.dentry = au_lookup_noperm_unlocked(name, len, ppath->dentry);
 	if (IS_ERR(path.dentry))
 		goto out;
 	if (d_is_positive(path.dentry)) {
@@ -244,7 +310,7 @@ struct dentry *vfsub_lookup_one_len(const char *name, struct path *ppath,
 	/* VFS checks it too, but by WARN_ON_ONCE() */
 	IMustLock(d_inode(ppath->dentry));
 
-       path.dentry = lookup_noperm(&QSTR_LEN(name, len), ppath->dentry);
+        path.dentry = au_lookup_noperm(name, len, ppath->dentry);
 	if (IS_ERR(path.dentry))
 		goto out;
 	if (d_is_positive(path.dentry)) {
@@ -527,7 +593,7 @@ struct dentry *vfsub_mkdir(struct inode *dir, struct path *path, int mode)
 	/* vfs_mkdir() calls dput() on error */
 	dget(path->dentry);
 	lockdep_off();
-	ret = vfs_mkdir(idmap, dir, path->dentry, mode);
+        ret = au_vfs_mkdir(idmap, dir, path->dentry, mode);
 	lockdep_on();
 	if (IS_ERR(ret))
 		goto out;
@@ -738,7 +804,7 @@ int vfsub_trunc(struct path *h_path, loff_t length, unsigned int attr,
 	err = security_file_truncate(h_file);
 	if (err)
 		goto out;
-	err = fsnotify_truncate_perm(&h_file->f_path, length);
+        err = au_fsnotify_truncate_perm(&h_file->f_path, length);
 	if (err)
 		goto out;
 	h_idmap = mnt_idmap(h_path->mnt);
