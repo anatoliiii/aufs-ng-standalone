@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""Minimal union filesystem orchestration helper for AUFS and overlayfs."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import subprocess
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+_ESCAPE_MAP = {
+    "\\040": " ",
+    "\\011": "\t",
+    "\\012": "\n",
+    "\\134": "\\",
+}
+
+
+def _decode(field: str) -> str:
+    for esc, real in _ESCAPE_MAP.items():
+        field = field.replace(esc, real)
+    return field
+
+
+@dataclass
+class MountEntry:
+    source: str
+    target: str
+    fstype: str
+    options: List[str]
+
+    @property
+    def option_map(self) -> Dict[str, str]:
+        result: Dict[str, str] = {}
+        for opt in self.options:
+            if "=" in opt:
+                key, value = opt.split("=", 1)
+            else:
+                key, value = opt, ""
+            result[key] = value
+        return result
+
+
+class UnionCtlError(RuntimeError):
+    pass
+
+
+class UnionCtl:
+    def __init__(self, backend: str, dry_run: bool = False, sudo: Optional[List[str]] = None):
+        self.backend = backend
+        self.dry_run = dry_run
+        self.sudo = sudo or []
+
+    # ------------------------------------------------------------------
+    def run(self, command: List[str]) -> None:
+        if self.dry_run:
+            print("DRY-RUN:", " ".join(command))
+            return
+        subprocess.run(self.sudo + command, check=True)
+
+    # ------------------------------------------------------------------
+    def _mount_entries(self) -> List[MountEntry]:
+        entries: List[MountEntry] = []
+        with open("/proc/self/mounts", "r", encoding="utf-8") as handle:
+            for line in handle:
+                fields = line.strip().split()
+                if len(fields) < 4:
+                    continue
+                source = _decode(fields[0])
+                target = _decode(fields[1])
+                fstype = fields[2]
+                options = fields[3].split(",") if fields[3] else []
+                entries.append(MountEntry(source, target, fstype, options))
+        return entries
+
+    def _find_mount(self, target: str) -> MountEntry:
+        canon = str(pathlib.Path(target).resolve())
+        for entry in self._mount_entries():
+            if pathlib.Path(entry.target).resolve().as_posix() == canon:
+                return entry
+        raise UnionCtlError(f"mountpoint {target!r} not found")
+
+    # ------------------------------------------------------------------
+    # AUFS helpers
+    def _parse_aufs_branches(self, entry: MountEntry) -> List[Dict[str, str]]:
+        branches: List[Dict[str, str]] = []
+        branch_opt = None
+        for opt in entry.options:
+            if opt.startswith("br:"):
+                branch_opt = opt[3:]
+                break
+            if opt.startswith("br="):
+                branch_opt = opt[3:]
+                break
+        if not branch_opt:
+            return branches
+        for token in branch_opt.split(":"):
+            if "=" not in token:
+                continue
+            path, mode = token.split("=", 1)
+            branches.append({"path": _decode(path), "mode": mode})
+        return branches
+
+    def _render_aufs_branches(self, branches: List[Dict[str, str]]) -> str:
+        parts = []
+        for br in branches:
+            mode = br.get("mode", "ro")
+            parts.append(f"{br['path']}={mode}")
+        return "br=" + ":".join(parts)
+
+    def _remount_aufs(self, entry: MountEntry, branches: List[Dict[str, str]]) -> None:
+        extra_opts = [opt for opt in entry.options if not opt.startswith("br")]
+        new_opts = [self._render_aufs_branches(branches)] + extra_opts
+        command = [
+            "mount",
+            "-i",
+            "-t",
+            "aufs",
+            "-o",
+            "remount," + ",".join(new_opts),
+            entry.source,
+            entry.target,
+        ]
+        self.run(command)
+
+    # ------------------------------------------------------------------
+    # overlayfs helpers
+    def _parse_overlay(self, entry: MountEntry) -> Dict[str, str]:
+        mapping = entry.option_map
+        return {
+            "lowerdir": mapping.get("lowerdir", ""),
+            "upperdir": mapping.get("upperdir", ""),
+            "workdir": mapping.get("workdir", ""),
+            "other": {k: v for k, v in mapping.items() if k not in {"lowerdir", "upperdir", "workdir"}},
+        }
+
+    def _remount_overlay(self, entry: MountEntry, state: Dict[str, str]) -> None:
+        option_parts = [f"lowerdir={state['lowerdir']}"]
+        if state.get("upperdir"):
+            option_parts.append(f"upperdir={state['upperdir']}")
+        if state.get("workdir"):
+            option_parts.append(f"workdir={state['workdir']}")
+        for key, value in state["other"].items():
+            option_parts.append(key if not value else f"{key}={value}")
+        command = [
+            "mount",
+            "-i",
+            "-t",
+            "overlay",
+            entry.source,
+            entry.target,
+            "-o",
+            "remount," + ",".join(option_parts),
+        ]
+        try:
+            self.run(command)
+        except subprocess.CalledProcessError:
+            # Fallback: full remount
+            self.run(["umount", entry.target])
+            full = [
+                "mount",
+                "-i",
+                "-t",
+                "overlay",
+                entry.source,
+                entry.target,
+                "-o",
+                ",".join(option_parts),
+            ]
+            self.run(full)
+
+    # ------------------------------------------------------------------
+    # Command implementations
+    def cmd_mount(self, args: argparse.Namespace) -> None:
+        target = str(pathlib.Path(args.target))
+        pathlib.Path(target).mkdir(parents=True, exist_ok=True)
+        if self.backend == "aufs":
+            branches = []
+            for item in args.branch or []:
+                if "=" not in item:
+                    raise UnionCtlError("branches must be PATH=MODE")
+                path, mode = item.split("=", 1)
+                branches.append({"path": path, "mode": mode})
+            if not branches:
+                raise UnionCtlError("at least one --branch is required for AUFS")
+            mount_opts = [self._render_aufs_branches(branches)]
+            if args.options:
+                mount_opts.extend(args.options)
+            command = [
+                "mount",
+                "-i",
+                "-t",
+                "aufs",
+                args.source or "aufs",
+                target,
+                "-o",
+                ",".join(mount_opts),
+            ]
+            self.run(command)
+        else:
+            lowerdir = args.lowerdir
+            if not lowerdir:
+                raise UnionCtlError("overlay backend requires --lowerdir")
+            option_parts = [f"lowerdir={lowerdir}"]
+            if args.upperdir:
+                option_parts.append(f"upperdir={args.upperdir}")
+            if args.workdir:
+                option_parts.append(f"workdir={args.workdir}")
+            if args.options:
+                option_parts.extend(args.options)
+            command = [
+                "mount",
+                "-i",
+                "-t",
+                "overlay",
+                args.source or "overlay",
+                target,
+                "-o",
+                ",".join(option_parts),
+            ]
+            self.run(command)
+
+    def cmd_umount(self, args: argparse.Namespace) -> None:
+        self.run(["umount", args.target])
+
+    def cmd_list(self, args: argparse.Namespace) -> None:
+        entries = [e for e in self._mount_entries() if e.fstype == self.backend]
+        if args.format == "json":
+            payload = []
+            for entry in entries:
+                info = {
+                    "source": entry.source,
+                    "target": entry.target,
+                    "fstype": entry.fstype,
+                    "options": entry.options,
+                }
+                if self.backend == "aufs":
+                    info["branches"] = self._parse_aufs_branches(entry)
+                else:
+                    info.update(self._parse_overlay(entry))
+                payload.append(info)
+            print(json.dumps(payload, indent=2))
+            return
+        for entry in entries:
+            print(f"{entry.target}: {entry.source} [{entry.fstype}] {','.join(entry.options)}")
+
+    def cmd_add_branch(self, args: argparse.Namespace) -> None:
+        entry = self._find_mount(args.target)
+        if self.backend == "aufs":
+            branches = self._parse_aufs_branches(entry)
+            if args.index is None or args.index >= len(branches):
+                branches.append({"path": args.branch_path, "mode": args.branch_mode})
+            else:
+                branches.insert(args.index, {"path": args.branch_path, "mode": args.branch_mode})
+            self._remount_aufs(entry, branches)
+        else:
+            state = self._parse_overlay(entry)
+            lowers = [p for p in state["lowerdir"].split(":") if p]
+            if args.index is None or args.index >= len(lowers):
+                lowers.append(args.branch_path)
+            else:
+                lowers.insert(args.index, args.branch_path)
+            state["lowerdir"] = ":".join(lowers)
+            self._remount_overlay(entry, state)
+
+    def cmd_del_branch(self, args: argparse.Namespace) -> None:
+        entry = self._find_mount(args.target)
+        if self.backend == "aufs":
+            branches = [b for b in self._parse_aufs_branches(entry) if b["path"] != args.branch_path]
+            self._remount_aufs(entry, branches)
+        else:
+            state = self._parse_overlay(entry)
+            lowers = [p for p in state["lowerdir"].split(":") if p and p != args.branch_path]
+            state["lowerdir"] = ":".join(lowers)
+            self._remount_overlay(entry, state)
+
+    def cmd_reorder(self, args: argparse.Namespace) -> None:
+        entry = self._find_mount(args.target)
+        if self.backend == "aufs":
+            existing = {b["path"]: b for b in self._parse_aufs_branches(entry)}
+            new_order = []
+            for path in args.branch:
+                if path not in existing:
+                    raise UnionCtlError(f"branch {path} not present")
+                new_order.append(existing[path])
+            if len(new_order) != len(existing):
+                remaining = [p for p in existing.keys() if p not in args.branch]
+                new_order.extend(existing[p] for p in remaining)
+            self._remount_aufs(entry, new_order)
+        else:
+            state = self._parse_overlay(entry)
+            lowers = [p for p in state["lowerdir"].split(":") if p]
+            mapping = {p: p for p in lowers}
+            new_lowers = []
+            for path in args.branch:
+                if path not in mapping:
+                    raise UnionCtlError(f"branch {path} not present")
+                new_lowers.append(path)
+            for path in lowers:
+                if path not in new_lowers:
+                    new_lowers.append(path)
+            state["lowerdir"] = ":".join(new_lowers)
+            self._remount_overlay(entry, state)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--backend", choices=["aufs", "overlay"], default="aufs")
+    parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_mount = sub.add_parser("mount", help="Mount a new union stack")
+    p_mount.add_argument("--target", required=True)
+    p_mount.add_argument("--source", default=None)
+    p_mount.add_argument("--branch", action="append", help="PATH=MODE entries for AUFS", default=[])
+    p_mount.add_argument("--options", action="append", default=[], help="Extra mount options")
+    p_mount.add_argument("--lowerdir", help="Lowerdir list for overlayfs")
+    p_mount.add_argument("--upperdir")
+    p_mount.add_argument("--workdir")
+    p_mount.set_defaults(func="cmd_mount")
+
+    p_umount = sub.add_parser("umount", help="Unmount a union mount")
+    p_umount.add_argument("target")
+    p_umount.set_defaults(func="cmd_umount")
+
+    p_list = sub.add_parser("list", help="List union mounts")
+    p_list.add_argument("--format", choices=["table", "json"], default="table")
+    p_list.set_defaults(func="cmd_list")
+
+    p_add = sub.add_parser("add-branch", help="Add a branch")
+    p_add.add_argument("--target", required=True)
+    p_add.add_argument("--branch", required=True, help="PATH=MODE for AUFS, PATH for overlay")
+    p_add.add_argument("--index", type=int, default=None)
+    p_add.set_defaults(func="cmd_add_branch")
+
+    p_del = sub.add_parser("del-branch", help="Remove a branch")
+    p_del.add_argument("--target", required=True)
+    p_del.add_argument("--branch", required=True)
+    p_del.set_defaults(func="cmd_del_branch")
+
+    p_reorder = sub.add_parser("reorder", help="Reorder branches")
+    p_reorder.add_argument("--target", required=True)
+    p_reorder.add_argument("branch", nargs="+", help="New branch order (subset allowed)")
+    p_reorder.set_defaults(func="cmd_reorder")
+
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+    ctl = UnionCtl(args.backend, dry_run=args.dry_run)
+
+    if args.command == "add-branch":
+        if args.backend == "aufs":
+            if "=" not in args.branch:
+                parser.error("AUFS branches must be PATH=MODE")
+            branch_path, branch_mode = args.branch.split("=", 1)
+        else:
+            branch_path, branch_mode = args.branch, "ro"
+        args.branch_path = branch_path
+        args.branch_mode = branch_mode
+    elif args.command == "del-branch":
+        args.branch_path = args.branch
+    elif args.command == "mount" and args.backend == "overlay" and not args.workdir and args.upperdir:
+        parser.error("overlay mounts with upperdir also require --workdir")
+
+    func = getattr(ctl, args.func)
+    func(args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except UnionCtlError as exc:
+        print(f"unionctl: {exc}", file=os.sys.stderr)
+        os.sys.exit(1)
+    except subprocess.CalledProcessError as exc:
+        print(f"unionctl: command failed with exit code {exc.returncode}", file=os.sys.stderr)
+        os.sys.exit(exc.returncode)
