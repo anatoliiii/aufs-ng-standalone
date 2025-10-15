@@ -1,21 +1,21 @@
-# AUFS Runtime Parameters
+# Параметры времени выполнения AUFS
 
-| Parameter | Default | Description | When to enable | Side effects |
-|-----------|---------|-------------|----------------|--------------|
-| `brs` | `1` | Exposes per-branch sysfs files under `/sys/fs/aufs/si_*/brN` for management tooling. | Keep enabled when sysfs-based branch control or observability is required (e.g. LayerControl). | Requires `CONFIG_SYSFS`; emits warnings if sbilist/sysrq expectations are not met.【F:fs/aufs/module.c†L148-L189】 |
-| `allow_userns` | `false` | Allows unprivileged users inside user namespaces to mount AUFS instances. | Enable for rootless containers or Aya sandbox sandboxes that rely on user namespaces. | Increases attack surface; ensure the kernel has userns hardened appropriately.【F:fs/aufs/module.c†L156-L189】 |
-| `debug` | `0` | Enables atomic toggle for verbose AUFS tracing through `pr_debug` hooks. | Combine with the `debug` preset in `tools/auconf` during deep kernel investigations. | High-volume logging; requires AUFS to be built with `CONFIG_AUFS_DEBUG=y` or the debug preset.【F:fs/aufs/debug.c†L35-L83】【F:fs/aufs/Makefile†L6-L27】 |
-| `sysrq` | kernel default | Binds a magic SysRq trigger for AUFS emergency diagnostics. | Useful for bare-metal debugging; typically tied to Aya's serial-console escape hatch. | Only available when `CONFIG_MAGIC_SYSRQ` and `CONFIG_AUFS_DEBUG` are on; exposes kernel memory to operators.【F:fs/aufs/sysrq.c†L96-L143】【F:config.mk†L34-L76】 |
+| Параметр | Значение по умолчанию | Описание | Когда включать | Побочные эффекты |
+|----------|-----------------------|----------|-----------------|------------------|
+| `brs` | `1` | Открывает веточные файлы sysfs `/sys/fs/aufs/si_*/brN` для управляющих инструментов. | Оставляйте включённым, когда нужен sysfs-контроль веток или наблюдаемость (например, LayerControl). | Требует `CONFIG_SYSFS`; при несоответствии ожиданий sbilist/sysrq выводит предупреждения.【F:fs/aufs/module.c†L148-L189】 |
+| `allow_userns` | `false` | Разрешает непривилегированным пользователям в user namespace монтировать AUFS. | Включайте для rootless-контейнеров или песочниц Aya, завязанных на userns. | Повышает поверхность атаки; ядро должно быть усилено для userns.【F:fs/aufs/module.c†L156-L189】 |
+| `debug` | `0` | Переключает подробный трейс AUFS через `pr_debug`. | Комбинируйте с пресетом `debug` в `tools/auconf` при глубокой диагностике ядра. | Логов много; требуется сборка AUFS с `CONFIG_AUFS_DEBUG=y` или пресет `debug`.【F:fs/aufs/debug.c†L35-L83】【F:fs/aufs/Makefile†L6-L27】 |
+| `sysrq` | значение ядра | Вешает обработчик Magic SysRq для аварийной диагностики AUFS. | Полезно на «железе»; обычно привязано к escape-последовательности Aya на консоли. | Доступно только при `CONFIG_MAGIC_SYSRQ` и `CONFIG_AUFS_DEBUG`; раскрывает память ядра операторам.【F:fs/aufs/sysrq.c†L96-L143】【F:config.mk†L34-L76】 |
 
-## Observability Hooks
+## Средства наблюдения
 
-* Sysfs surfaces branch tables, whiteout counters, and copy-up statistics when `brs=1` and `CONFIG_SYSFS` are enabled, permitting LayerControl to audit topology without parsing `/proc/mounts`.【F:fs/aufs/module.c†L148-L189】
-* Debug builds expose `/sys/fs/aufs/debug` counters together with tracepoints; pair with `CONFIG_DEBUG_FS` for full coverage.【F:fs/aufs/debug.c†L35-L83】
+* Sysfs показывает таблицы веток, счётчики whiteout и статистику copy-up, когда `brs=1` и активен `CONFIG_SYSFS`, что позволяет LayerControl инспектировать топологию без парсинга `/proc/mounts`.【F:fs/aufs/module.c†L148-L189】
+* Отладочные сборки раскрывают счётчики `/sys/fs/aufs/debug` и tracepoint'ы; дополняйте `CONFIG_DEBUG_FS` для полноты.【F:fs/aufs/debug.c†L35-L83】
 
-## Recommended Presets
+## Рекомендуемые пресеты
 
-* **Release** — default shipped configuration, matching upstream behaviour with conservative branch count.
-* **Debug** — `tools/auconf --preset debug --show` turns on tracing, sysrq, and `udba=*notify` prerequisites.【F:tools/auconf†L12-L191】
-* **Max-branches** — `tools/auconf --preset max-branches --force` raises branch limits to 32k for extremely deep SquashFS stacks.【F:tools/auconf†L12-L191】
+* **Release** — дефолтная поставка, повторяет апстримное поведение с консервативным числом веток.
+* **Debug** — `tools/auconf --preset debug --show` включает трейсинг, sysrq и предпосылки `udba=*notify`.【F:tools/auconf†L12-L191】
+* **Max-branches** — `tools/auconf --preset max-branches --force` поднимает лимит веток до 32k для глубоких стеков SquashFS.【F:tools/auconf†L12-L191】
 
-Use `tools/auconf --list-presets` to enumerate presets and `--show` to review the delta before committing configuration changes. Always regenerate `config.mk` under version control to keep CI reproducible.【F:tools/auconf†L12-L191】
+Используйте `tools/auconf --list-presets` для перечисления пресетов и `--show`, чтобы увидеть дельту перед коммитом изменений. Всегда регенерируйте `config.mk` под версионным контролем, чтобы сборки CI оставались воспроизводимыми.【F:tools/auconf†L12-L191】

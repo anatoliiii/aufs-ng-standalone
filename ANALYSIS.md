@@ -1,42 +1,65 @@
-# AUFS NG Standalone — Code & Build Map
+# AUFS NG Standalone — карта кода и сборки
 
-## Repository Topology
+## Топология репозитория
 
-* `fs/aufs` — kernel module sources organised by subsystem: superblock glue (`super.c`, `sbinfo.c`), branch management (`branch.c`, `opts.c`), copy-up/whiteout engines (`cpup.c`, `whout.c`), inode/dentry layers (`iinfo.c`, `dinfo.c`), and optional features gated by `CONFIG_AUFS_*`. The `Makefile` enumerates all compilation units and handles conditional inclusion for xattr, exportfs, FHSM, poll, and debug helpers.【F:fs/aufs/Makefile†L1-L35】
-* `include/uapi/linux/aufs_type.h` — public ABI for userspace helpers such as `mount.aufs` and tooling integrated via `make install_headers`.【F:Makefile†L38-L54】
-* Top-level `Makefile` orchestrates out-of-tree builds by pointing at `${KDIR}`, injecting `EXTRA_CFLAGS`, and driving kernel header installation alongside module compilation.【F:Makefile†L1-L54】
-* Patch series (`aufs6-*.patch`, `tmpfs-idr.patch`, `vfs-ino.patch`, etc.) capture delta against vanilla kernels and are consumed by CI automation when preparing Aya kernel drops.
+* `fs/aufs` — исходники модуля ядра, разбитые по подсистемам: клей для суперблока (`super.c`, `sbinfo.c`), управление ветками (`branch.c`, `opts.c`), механизмы copy-up и whiteout (`cpup.c`, `whout.c`), уровни inode/dentry (`iinfo.c`, `dinfo.c`) и опциональные возможности под флагами `CONFIG_AUFS_*`. `Makefile` перечисляет все единицы компиляции и условно подключает поддержку xattr, exportfs, FHSM, poll и отладочные помощники.【F:fs/aufs/Makefile†L1-L35】
+* `include/uapi/linux/aufs_type.h` — публичный ABI для пользовательских утилит вроде `mount.aufs` и инструментов, устанавливаемых через `make install_headers`.【F:Makefile†L38-L54】
+* Верхнеуровневый `Makefile` управляет сборкой вне дерева ядра, указывает на `${KDIR}`, прокидывает `EXTRA_CFLAGS` и собирает модуль параллельно с установкой заголовков ядра.【F:Makefile†L1-L54】
+* Патчи (`aufs6-*.patch`, `tmpfs-idr.patch`, `vfs-ino.patch` и др.) фиксируют дельту относительно ванильного ядра и потребляются CI при подготовке выпусков Aya.
 
-## Build & Configuration Flow
+## Анализ текущей архитектуры AUFS
 
-1. `make` resolves `${KDIR}` to the currently running kernel build directory, warning when configuration headers are missing — a common case when cross-compiling within containers.【F:Makefile†L1-L23】
-2. `config.mk` injects AUFS-specific `CONFIG_` toggles which feed into `AUFS_DEF_CONFIG` and, in turn, the module build. The new `CONFIG_AUFS_DEBUG ?= n` stanza allows reproducible debug builds without forcing `-DDEBUG` globally.【F:config.mk†L1-L76】
-3. `fs/aufs/Makefile` consumes `CONFIG_AUFS_DEBUG` to append `-DDEBUG` only when the flag is asserted, aligning with Aya's requirement for opt-in verbose logging.【F:fs/aufs/Makefile†L1-L17】
-4. `tools/auconf` regenerates the configuration preamble while preserving the warning/validation logic in the tail of `config.mk`, letting CI capture mis-matched dependencies (e.g. SBILIST without PROC_FS).【F:tools/auconf†L12-L191】【F:config.mk†L34-L76】
+* **Управление ветками** — `struct au_sbinfo` хранит массив `si_branch` и границы индексов; операции добавления/удаления ветки проходят через `au_br_alloc()` и `au_br_do_free()`, удерживая `si_rwsem`, что блокирует читателей на всём времени перераспределения структур.【F:fs/aufs/sbinfo.c†L36-L134】【F:fs/aufs/branch.c†L82-L186】
+* **Copy-up/whiteout** — логика `au_cpup_single()` и вспомогательных процедур монолитна, использует ветвление по стратегиям внутри одного файла, а whiteout-контроль опирается на линейные списки и подсчёты в `whout.c`, что усложняет внедрение альтернативных политик и масштабирование при большом числе белых меток.【F:fs/aufs/cpup.c†L740-L1208】【F:fs/aufs/whout.c†L32-L260】
+* **Наблюдаемость** — расширенные счётчики доступны в debug-сборках через sysfs (`au_sysfs_init_si()`), однако в стандартной конфигурации публикуются лишь базовые поля, а tracepoint'ы отсутствуют, что требует включать `CONFIG_AUFS_DEBUG` ради профилирования.【F:fs/aufs/sysfs.c†L22-L180】【F:fs/aufs/debug.c†L35-L116】
+* **Взаимодействие с VFS** — регистрация файловой системы (`aufs_init()`) выставляет флаги `FS_USERNS_MOUNT`, настраивает super_operations и файловые операции, подтверждая совместимость с user namespace и inotify, но опирается на устоявшийся API без защиты от будущих изменений path lookup/idmapped mounts.【F:fs/aufs/module.c†L148-L340】
 
-## Capability Map
+### Выявленные точки роста
 
-* **Branch management** — dynamic add/del/prepend/append operations flow through `opts.c` (`Opt_append`, `Opt_del`, `Opt_mod`) and the sysfs-backed state machine under `/sys/fs/aufs/si_*`, enabling LayerControl to reorder or prune branches without remounting.【F:fs/aufs/opts.c†L640-L720】
-* **Copy-up policies** — writeback routing supports move/copy heuristics, sparse files, and whiteout optimisation as documented in `design/05wbr_policy.txt`, providing the necessary hooks for TimeLayer snapshots.【F:Documentation/filesystems/aufs/design/05wbr_policy.txt†L1-L120】
-* **Pseudo-hardlinks & whiteouts** — README highlights branch permission flags, whiteout hardlinking, and pseudo-hardlink semantics, all critical for SquashFS + RW overlay correctness in Aya OS.【F:Documentation/filesystems/aufs/README†L38-L80】
-* **User/ID namespaces** — `allow_userns` gate surfaces the `FS_USERNS_MOUNT` capability bit at registration time, allowing controlled rootless mounts when Aya enables it in constrained sandboxes.【F:fs/aufs/module.c†L148-L213】
-* **Monitoring** — Debug builds wire `/sys/fs/aufs` statistics and optional debugfs exports, giving TimeLayer an inspection surface without reboots.【F:fs/aufs/debug.c†L35-L83】【F:fs/aufs/module.c†L148-L213】
+1. **Декомпозиция copy-up**: текущее ветвление в `cpup.c` следует вынести в структуру стратегий, чтобы политики можно было настраивать по ветке/типу файла, а код copy-up стал расширяемым без каскадных `if`/`switch`.
+2. **RCU для веток**: удержание `si_rwsem` на всех модификациях ограничивает параллелизм. Переход на RCU-читателей и версионность `struct au_sbinfo` уменьшит задержки lookup/readdir при динамическом управлении слоями.
+3. **Индекс whiteout**: линейные списки в `whout.c` плохо масштабируются; переход на radix-tree (`xa_array`) даст логарифмический доступ и облегчит сборку статистики.
+4. **Телеметрия по умолчанию**: стоит добавить стабильные sysfs-счётчики и tracepoint'ы в горячих местах (copy-up, rename, whiteout), чтобы профилирование было возможно без отладочной сборки.
+5. **ABI устойчивость**: необходимо задокументировать изменения sysfs/tracepoint и подготовить тесты на обратную совместимость, чтобы адаптация к новым ядрам проходила предсказуемо.
 
-## Runtime Tunables & Limits
+## Контур сборки и конфигурации
 
-* Module parameters (`brs`, `allow_userns`, `debug`, `sysrq`) map directly to Aya runtime controls; refer to `docs/ADMIN.md` for operational guidance.【F:fs/aufs/module.c†L148-L189】【F:fs/aufs/debug.c†L35-L83】【F:fs/aufs/sysrq.c†L96-L143】
-* Branch limits default to 127 but scale up to 32k when `CONFIG_AUFS_BRANCH_MAX_32767` is enabled via the new `max-branches` preset — necessary for Aya's multi-squash image stacks.【F:config.mk†L1-L32】【F:tools/auconf†L12-L191】
-* SBILIST, DEBUGFS, and MAGIC_SYSRQ dependencies are validated at parse time; CI catches misconfigurations early because `config.mk` aborts the build when prerequisite kernel options are missing.【F:config.mk†L34-L76】
+1. `make` разрешает `${KDIR}` до каталога сборки текущего ядра и предупреждает об отсутствии конфигурационных заголовков — типичная ситуация при кросс-сборке в контейнере.【F:Makefile†L1-L23】
+2. `config.mk` подключает AUFS-специфичные флаги `CONFIG_`, которые формируют `AUFS_DEF_CONFIG` и управляют сборкой модуля. Новый блок `CONFIG_AUFS_DEBUG ?= n` позволяет воспроизводимо включать отладку, не форсируя `-DDEBUG` всегда.【F:config.mk†L1-L76】
+3. `fs/aufs/Makefile` использует `CONFIG_AUFS_DEBUG`, чтобы добавить `-DDEBUG` только при активном флаге, что соответствует требованию Aya о явном включении подробного логирования.【F:fs/aufs/Makefile†L1-L17】
+4. `tools/auconf` заново генерирует конфигурационный пролог, сохраняя логику предупреждений и валидации в хвосте `config.mk`, что позволяет CI отлавливать несогласованные зависимости (например, SBILIST без PROC_FS).【F:tools/auconf†L12-L191】【F:config.mk†L34-L76】
 
-## Known Constraints & Risk Inventory
+## Карта возможностей
 
-* Upstream rejection of AUFS remains; maintaining out-of-tree patches is unavoidable, and README documents the historical lack of mainline acceptance.【F:Documentation/filesystems/aufs/README†L17-L37】
-* Nested mount support, statistics exports, and other experimental features are currently disabled in aufs6 per upstream TODOs, so Aya-specific extensions must not rely on them without re-enabling code paths.【F:Documentation/filesystems/aufs/README†L82-L108】
-* NFS export is supported but historically fragile; we treat it as an opt-in scenario and document the risk in the Aya integration notes.【F:Documentation/filesystems/aufs/README†L52-L74】
+* **Управление ветками** — операции динамического добавления/удаления/перестановки проходят через `opts.c` (`Opt_append`, `Opt_del`, `Opt_mod`) и поддерживаются машиной состояний sysfs под `/sys/fs/aufs/si_*`, что даёт LayerControl возможность менять порядок веток без перемонтирования.【F:fs/aufs/opts.c†L640-L720】
+* **Политики copy-up** — маршрутизация записи поддерживает эвристику перемещения/копирования, sparse-файлы и оптимизацию whiteout согласно `design/05wbr_policy.txt`, обеспечивая нужные крючки для снапшотов TimeLayer.【F:Documentation/filesystems/aufs/design/05wbr_policy.txt†L1-L120】
+* **Псевдо-hlink и whiteout** — README описывает флаги доступа веток, whiteout hardlink и семантику псевдо-жёстких ссылок, критичную для связки SquashFS + RW-слоёв в Aya OS.【F:Documentation/filesystems/aufs/README†L38-L80】
+* **User/ID namespaces** — параметр `allow_userns` выставляет бит `FS_USERNS_MOUNT` при регистрации ФС, позволяя контролируемые rootless-монты, когда Aya включает их в песочницах.【F:fs/aufs/module.c†L148-L213】
+* **Мониторинг** — отладочные сборки открывают статистику `/sys/fs/aufs` и опциональный экспорт в debugfs, предоставляя TimeLayer поверхность наблюдаемости без перезагрузок.【F:fs/aufs/debug.c†L35-L83】【F:fs/aufs/module.c†L148-L213】
 
-## Build Prerequisites & Toolchain
+## Параметры времени выполнения и ограничения
 
-* Requires kernel headers prepared via `make modules_prepare`; the standalone build fails fast if `/lib/modules/<version>/build` or `headers_install.sh` are missing, which is surfaced in the provided smoke log for transparency.【4fa0c6†L1-L10】
-* Toolchain defaults to GCC but our CI matrix exercises both GCC and Clang against multiple kernel trees, ensuring Aya's Debian-based toolchains remain covered.【F:.github/workflows/build.yml†L1-L180】
+* Параметры модуля (`brs`, `allow_userns`, `debug`, `sysrq`) напрямую соответствуют средствам управления Aya; подробности приведены в `docs/ADMIN.md`.【F:fs/aufs/module.c†L148-L189】【F:fs/aufs/debug.c†L35-L83】【F:fs/aufs/sysrq.c†L96-L143】
+* Лимит веток по умолчанию — 127, но его можно поднять до 32k при включении `CONFIG_AUFS_BRANCH_MAX_32767` через новый пресет `max-branches`, что необходимо для многослойных squash-образов Aya.【F:config.mk†L1-L32】【F:tools/auconf†L12-L191】
+* Зависимости SBILIST, DEBUGFS и MAGIC_SYSRQ проверяются при разборе; CI досрочно ловит неверные конфигурации, потому что `config.mk` прерывает сборку при отсутствии обязательных опций ядра.【F:config.mk†L34-L76】
 
-The above map underpins the ensuing CI, testing, and integration artefacts and provides a baseline for estimating Aya OS specific effort.
+## Известные ограничения и риски
+
+* AUFS по-прежнему вне основного дерева; сопровождение патчей неизбежно, README фиксирует историческое непринятие в mainline.【F:Documentation/filesystems/aufs/README†L17-L37】
+* Поддержка вложенных монтирований, экспорт статистики и другие экспериментальные функции в aufs6 выключены; Aya не должна на них полагаться без явного возврата кодовых путей.【F:Documentation/filesystems/aufs/README†L82-L108】
+* Экспорт по NFS поддерживается, но традиционно хрупок; рассматриваем его как опцию и отражаем риск в интеграционных заметках Aya.【F:Documentation/filesystems/aufs/README†L52-L74】
+
+## Предпосылки сборки и тулчейн
+
+* Требуются заголовки ядра, подготовленные через `make modules_prepare`; автономная сборка быстро падает, если отсутствует `/lib/modules/<version>/build` или `headers_install.sh`, что зафиксировано в журнале smoke для прозрачности.【4fa0c6†L1-L10】
+* По умолчанию используется GCC, но матрица CI гоняет и GCC, и Clang на нескольких ядрах, что покрывает Debian-инструментарий Aya.【F:.github/workflows/build.yml†L1-L180】
+
+## Предложения по развитию архитектуры AUFS
+
+1. **Выделить слой политики copy-up** — вынести выбор стратегии в отдельную таблицу `struct aufs_cpup_policy` с коллбэками, чтобы LayerControl мог подгружать профили (move-only, copy-on-demand) без перекомпиляции. Требует разбиения монолитного `cpup.c` и введения регистратора политик.【F:fs/aufs/cpup.c†L1-L1230】
+2. **Унифицировать управление ветками через RCU** — текущее обновление `struct aufs_sbinfo` удерживает глобальные спинлоки при модификации веток. Перенос на RCU-читателей с последовательными версиями снимет паузы при чтении и позволит LayerControl чаще переставлять слои без заморозки I/O.【F:fs/aufs/sbinfo.c†L40-L210】【F:fs/aufs/opts.c†L640-L720】
+3. **Добавить tracepoints для горячих путей** — внедрить `TRACE_EVENT` в копирование (`au_cpup_single`), переназначение dentries и разрешение whiteout, чтобы perf/ftrace могли собирать метрики без DEBUG-сборок. Это облегчит анализ горячих путей Aya и интеграцию с eBPF.【F:fs/aufs/cpup.c†L804-L1208】【F:fs/aufs/dentry.c†L50-L190】
+4. **Модернизировать whiteout-хранилище** — заменить самописные списки на `xa_array` (radix-tree API) для кеша whiteout, что улучшит латентность при тысячах белых меток и упростит масштабирование под TimeLayer.【F:fs/aufs/whout.c†L1-L260】
+5. **Расширить sysfs-метрики** — добавить per-branch счётчики copy-up и промахов кеша, закрепив ABI в `Documentation/filesystems/aufs/README`. Это даст LayerControl прямой фидбек при оптимизации порядка веток.【F:fs/aufs/sysfs.c†L20-L180】
+
+Эта карта служит опорой для CI, тестов и интеграции Aya OS и задаёт направление дальнейших улучшений.

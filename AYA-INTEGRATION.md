@@ -1,43 +1,43 @@
-# Aya OS AUFS Integration Guide
+# Руководство по интеграции AUFS в Aya OS
 
-## Initramfs Boot Flow
+## Поток загрузки initramfs
 
-1. **Prepare Layers**
-   * Mount immutable SquashFS images under `/run/aya/lower.d/*` in ascending priority order (oldest base first, newest overlay last).
-   * Stage the writable state volume (ext4/F2FS) under `/run/aya/rw/current` and ensure journal replay completes before union mounting.
-   * Optionally stage a volatile tmpfs layer for crash-only experimentation (`/run/aya/rw/volatile`).
-2. **Generate AUFS config**
-   * Use `tools/auconf --preset release --force` at image build time; switch to `debug` for troubleshooting rescue images.【F:tools/auconf†L12-L191】
-   * Export the chosen preset via `/etc/aya/aufs.conf` to keep LayerControl/TimeLayer consistent.
-3. **Mount Union**
-   * Invoke `tools/unionctl mount --backend aufs --target /sysroot --branch /run/aya/rw/current=rw --branch /run/aya/lower.d/latest=ro --branch ...` inside initramfs.
-   * Verify the mount via `/proc/mounts` and `/sys/fs/aufs/si_*/br*` when `brs=1`.
-4. **Handoff**
-   * Bind-mount `/sysroot` into the new root, move ephemeral control directories (LayerControl sockets, logs) before `switch_root`.
+1. **Подготовка слоёв**
+   * Монтируйте неизменяемые образы SquashFS в `/run/aya/lower.d/*` в порядке возрастания приоритета (самый старый базовый слой первым, самый новый накрывающий последним).
+   * Подготовьте записываемый том (ext4/F2FS) в `/run/aya/rw/current` и дождитесь окончания реплея журнала до объединённого монтирования.
+   * При необходимости добавьте летучий слой tmpfs для экспериментов «crash-only» (`/run/aya/rw/volatile`).
+2. **Генерация конфигурации AUFS**
+   * Используйте `tools/auconf --preset release --force` на этапе сборки образа; переключайтесь на `debug` для аварийных и rescue-сборок.【F:tools/auconf†L12-L191】
+   * Экспортируйте выбранный пресет в `/etc/aya/aufs.conf`, чтобы LayerControl и TimeLayer оставались согласованными.
+3. **Монтирование union**
+   * Вызовите `tools/unionctl mount --backend aufs --target /sysroot --branch /run/aya/rw/current=rw --branch /run/aya/lower.d/latest=ro --branch ...` внутри initramfs.
+   * Проверьте монтирование через `/proc/mounts` и `/sys/fs/aufs/si_*/br*`, когда `brs=1`.
+4. **Передача управления**
+   * Примонтируйте `/sysroot` в новый корень и перенесите временные каталоги управления (сокеты LayerControl, логи) до `switch_root`.
 
-## LayerControl Hooks
+## Хуки LayerControl
 
-* Use `unionctl add-branch --index 1` to splice hotfix SquashFS layers without service interruption; remount semantics reuse AUFS' `br=` parser for atomic updates.【F:tools/unionctl†L1-L400】【F:fs/aufs/opts.c†L640-L720】
-* Monitor branch health via `/sys/fs/aufs/si_X/brY` — stale entries imply failed copy-up or permission issues. Emit health probes to Aya's watchdog.
-* When detaching a branch, flush cached dentries with `echo 3 > /proc/sys/vm/drop_caches` only after AUFS confirms branch removal to avoid page cache thrash.
+* Используйте `unionctl add-branch --index 1`, чтобы врезать hotfix SquashFS-слои без простоя; семантика перемонтажа повторяет парсер AUFS `br=` и обеспечивает атомарность.【F:tools/unionctl†L1-L400】【F:fs/aufs/opts.c†L640-L720】
+* Следите за здоровьем веток через `/sys/fs/aufs/si_X/brY` — устаревшие значения сигнализируют о сбоях copy-up или правах. Отправляйте пробы здоровья в watchdog Aya.
+* При отсоединении ветки очищайте кеши `echo 3 > /proc/sys/vm/drop_caches` только после подтверждения удаления ветки AUFS, чтобы избежать «штопора» страничного кеша.
 
-## TimeLayer Snapshots
+## Снапшоты TimeLayer
 
-* Model writable layers as rotate-able timelines: `current`, `snapshot.N`, `rescue`. Use AUFS' multiple RW branch support to promote snapshots atomically (remount with `unionctl reorder`).【F:Documentation/filesystems/aufs/README†L52-L74】
-* For crash recovery, mount snapshots read-only and reattach the last known good branch as RW while preserving previous branch for forensic analysis.
-* Ensure copy-up policies prefer the most recent RW layer (set `unionctl mount --policy=rr` once AUFS ioctl counterpart lands; until then rely on default move policy).【F:Documentation/filesystems/aufs/design/05wbr_policy.txt†L1-L120】
+* Представляйте RW-слои как вращающуюся шкалу времени: `current`, `snapshot.N`, `rescue`. Используйте поддержку нескольких RW-веток в AUFS для атомарного повышения снапшотов (перестановка через `unionctl reorder`).【F:Documentation/filesystems/aufs/README†L52-L74】
+* Для восстановления после сбоя монтируйте снапшоты в RO и присоединяйте последнюю стабильную ветку как RW, сохраняя предыдущую для анализа.
+* Обеспечьте приоритет копирования в самый свежий RW-слой (будущий флаг `unionctl mount --policy=rr`; пока используем стандартную политику move).【F:Documentation/filesystems/aufs/design/05wbr_policy.txt†L1-L120】
 
-## Failure Handling
+## Обработка отказов
 
-* **Missing lower layer** — abort boot with a descriptive error, fall back to overlayfs baseline using `unionctl --backend overlay --dry-run` to validate fallback plan.
-* **RW corruption** — remount with `snapshot.N` as RW and mark the broken volume for later `fsck`; TimeLayer should queue a repair job.
-* **User namespace mounts** — disable `allow_userns` unless Aya's sandbox explicitly requires it; enabling flips `FS_USERNS_MOUNT` for the filesystem type at registration.【F:fs/aufs/module.c†L148-L213】
-* **LSM integration** — load AppArmor profiles before the AUFS mount so that copy-up inherits expected labels. Use `unionctl list --format json` to feed audit logs into Aya's telemetry bus.【F:tools/unionctl†L1-L400】
+* **Пропавший нижний слой** — прерывайте загрузку с понятной ошибкой, переключайтесь на запасной overlayfs через `unionctl --backend overlay --dry-run`, чтобы проверить план деградации.
+* **Порча RW** — перемонтируйте с `snapshot.N` в режиме RW и пометьте проблемный том для последующего `fsck`; TimeLayer должен поставить задачу на ремонт.
+* **Монтирование в user namespace** — отключайте `allow_userns`, если песочницы Aya явно не требуют этого; включение поднимает `FS_USERNS_MOUNT` при регистрации ФС.【F:fs/aufs/module.c†L148-L213】
+* **Интеграция с LSM** — загружайте профили AppArmor до монтирования AUFS, чтобы copy-up наследовал корректные метки. Используйте `unionctl list --format json` для передачи аудита в телеметрию Aya.【F:tools/unionctl†L1-L400】
 
-## Logging & Telemetry
+## Логирование и телеметрия
 
-* Keep `brs=1` to expose per-branch stats, but disable in production builds where sysfs exposure is restricted.
-* When debugging, set `CONFIG_AUFS_DEBUG=y` via `tools/auconf --preset debug` and toggle runtime verbosity with `echo 1 > /sys/module/aufs/parameters/debug` (maps to the atomic module parameter).【F:fs/aufs/debug.c†L35-L83】
-* Ship `logs/` artefacts from smoke/soak runs with Aya OTA packages to track regression trends.
+* Держите `brs=1`, чтобы видеть статистику по веткам, но отключайте в продакшене, где sysfs закрыт.
+* При отладке включайте `CONFIG_AUFS_DEBUG=y` через `tools/auconf --preset debug` и управляйте вербозностью `echo 1 > /sys/module/aufs/parameters/debug` (атомарный параметр модуля).【F:fs/aufs/debug.c†L35-L83】
+* Поставляйте артефакты `logs/` из smoke/soak прогонов вместе с OTA-пакетами Aya для отслеживания регрессий.
 
-Adhering to this flow ensures Aya OS can swap between AUFS and overlayfs with minimal churn while preserving recovery semantics.
+Следование этим шагам позволяет Aya OS безболезненно переключаться между AUFS и overlayfs, сохраняя семантику восстановления.
