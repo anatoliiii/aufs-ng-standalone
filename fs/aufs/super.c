@@ -734,18 +734,18 @@ void au_remount_refresh(struct super_block *sb, unsigned int do_idop)
 
 	if (do_idop) {
 		if (au_ftest_si(sbi, NO_DREVAL)) {
-			AuDebugOn(sb->__s_d_op == &aufs_dop_noreval);
-			set_default_d_op(sb, &aufs_dop_noreval);
+			AuDebugOn(au_sb_dop(sb) == &aufs_dop_noreval);
+			au_sb_set_dop(sb, &aufs_dop_noreval);
 			AuDebugOn(sbi->si_iop_array == aufs_iop_nogetattr);
 			sbi->si_iop_array = aufs_iop_nogetattr;
 		} else {
-			AuDebugOn(sb->__s_d_op == &aufs_dop);
-			set_default_d_op(sb, &aufs_dop);
+			AuDebugOn(au_sb_dop(sb) == &aufs_dop);
+			au_sb_set_dop(sb, &aufs_dop);
 			AuDebugOn(sbi->si_iop_array == aufs_iop);
 			sbi->si_iop_array = aufs_iop;
 		}
 		pr_info("reset to %ps and %ps\n",
-			sb->__s_d_op, sbi->si_iop_array);
+			au_sb_dop(sb), sbi->si_iop_array);
 	}
 
 	di_write_unlock(root);
@@ -860,7 +860,9 @@ struct file_system_type aufs_fs_type = {
 	.name		= AUFS_FSTYPE,
 	/* a race between rename and others */
 	.fs_flags	= FS_RENAME_DOES_D_MOVE
+#ifdef FS_MGTIME
 				| FS_MGTIME
+#endif
 				/* untested */
 				/*| FS_ALLOW_IDMAP*/
 				,
