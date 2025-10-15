@@ -7,58 +7,54 @@ KERNEL_ID=${KERNEL_ID:?KERNEL_ID is required}
 COMPILER=${COMPILER:-gcc}
 KERNEL_CONFIG=${KERNEL_CONFIG:-defconfig}
 PATCH_SERIES=${KERNEL_PATCHES:-}
-ARCHIVE_CANDIDATES=${KERNEL_ARCHIVE_CANDIDATES:-}
+ARCHIVE_CANDIDATES_STR=${KERNEL_ARCHIVE_CANDIDATES:-}
 GIT_REPO=${KERNEL_GIT_REPO:-}
 GIT_REF=${KERNEL_GIT_REF:-}
 
+# Convert space-separated strings to arrays safely
+read -r -a ARCHIVE_CANDIDATES <<< "$ARCHIVE_CANDIDATES_STR"
+read -r -a PATCH_LIST <<< "$PATCH_SERIES"
+
 workdir=$(mktemp -d)
-cleanup() { rm -rf "${workdir}"; }
+cleanup() {
+  rm -rf "${workdir}"
+}
 trap cleanup EXIT
 
 fetch_kernel() {
   local dest=$1
-  mkdir -p "${dest}"
-  if [[ -n "${ARCHIVE_CANDIDATES}" ]]; then
+  if [[ ${#ARCHIVE_CANDIDATES[@]} -gt 0 ]]; then
     local url
-    for url in ${ARCHIVE_CANDIDATES}; do
-      # все служебные маркеры — в stderr, а не в stdout
-      >&2 echo "::group::Downloading ${url}"
+    for url in "${ARCHIVE_CANDIDATES[@]}"; do
+      # Trim whitespace
+      url=$(echo "$url" | xargs)
+      [[ -z "$url" ]] && continue
+      echo "::group::Downloading ${url}"
       if curl -fsSL "${url}" -o "${dest}/kernel.tar.xz"; then
-        >&2 echo "::endgroup::"
-        tar -C "${dest}" -xf "${dest}/kernel.tar.xz"
-        # берем первый каталог в dest (dest — пустой mktemp перед распаковкой)
+        echo "::endgroup::"
+        tar -xf "${dest}/kernel.tar.xz" -C "${dest}"
         local top
-        top=$(find "${dest}" -mindepth 1 -maxdepth 1 -type d -printf '%p\n' | head -n1)
-        printf '%s\n' "${top}"
+        top=$(tar -tf "${dest}/kernel.tar.xz" | head -n1 | cut -d/ -f1)
+        echo "${dest}/${top}"
         return 0
       fi
-      >&2 echo "::warning title=Download failed::${url}"
-      >&2 echo "::endgroup::"
+      echo "::warning title=Download failed::${url}" >&2
+      echo "::endgroup::"
     done
-    >&2 echo "::error title=Kernel archive not found::tried ${ARCHIVE_CANDIDATES}"
+    echo "::error title=Kernel archive not found::tried ${ARCHIVE_CANDIDATES[*]}" >&2
     return 1
   fi
+
   if [[ -n "${GIT_REPO}" ]]; then
-    >&2 echo "::group::Cloning ${GIT_REPO}@${GIT_REF}"
+    echo "::group::Cloning ${GIT_REPO}@${GIT_REF}"
     git clone --depth 1 --branch "${GIT_REF}" "${GIT_REPO}" "${dest}/kernel"
-    >&2 echo "::endgroup::"
-    printf '%s\n' "${dest}/kernel"
+    echo "::endgroup::"
+    echo "${dest}/kernel"
     return 0
   fi
-  >&2 echo "::error title=No kernel source specified::set KERNEL_ARCHIVE_CANDIDATES or KERNEL_GIT_REPO"
-  return 1
-}
 
-apply_patches() {
-  local tree=$1
-  [[ -z "${PATCH_SERIES}" ]] && return 0
-  pushd "${tree}" >/dev/null
-  for patch in ${PATCH_SERIES}; do
-    >&2 echo "::group::Applying ${patch}"
-    patch -p1 < "${REPO_ROOT}/${patch}"
-    >&2 echo "::endgroup::"
-  done
-  popd >/dev/null
+  echo "::error title=No kernel source specified::set KERNEL_ARCHIVE_CANDIDATES or KERNEL_GIT_REPO" >&2
+  return 1
 }
 
 prepare_kernel() {
@@ -70,44 +66,54 @@ prepare_kernel() {
   popd >/dev/null
 }
 
+apply_patches() {
+  local tree=$1
+  if [[ ${#PATCH_LIST[@]} -eq 0 ]]; then
+    return
+  fi
+  pushd "${tree}" >/dev/null
+  for patch in "${PATCH_LIST[@]}"; do
+    patch=$(echo "$patch" | xargs)
+    [[ -z "$patch" ]] && continue
+    echo "::group::Applying ${patch}"
+    patch -p1 < "${REPO_ROOT}/${patch}"
+    echo "::endgroup::"
+  done
+  popd >/dev/null
+}
+
 setup_compiler() {
   if [[ "${COMPILER}" == "clang" ]]; then
     export LLVM=1
     export CC=clang
     export LD=ld.lld
   else
-    unset LLVM || true
-    export CC=gcc
+    unset LLVM CC LD
   fi
-}
-
-# советую собирать AUFS как внешний модуль прямо против KDIR=${tree}
-build_aufs_module() {
-  local tree=$1
-  make -C "${tree}" M="${REPO_ROOT}/fs/aufs" clean
-  make -C "${tree}" M="${REPO_ROOT}/fs/aufs" modules
 }
 
 main() {
   setup_compiler
   local tree
-    tree=$(fetch_kernel "${workdir}" | tail -n1)
-
+  tree=$(fetch_kernel "${workdir}")
   apply_patches "${tree}"
   prepare_kernel "${tree}"
 
   mkdir -p "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}"
-  build_aufs_module "${tree}"
-  cp "${REPO_ROOT}/fs/aufs/aufs.ko" "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/aufs.ko"
+  pushd "${REPO_ROOT}" >/dev/null
+  KDIR="${tree}" make clean
+  KDIR="${tree}" make all
+  cp fs/aufs/aufs.ko "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/aufs.ko"
+  popd >/dev/null
 
-  cat <<JSON >"${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/build.json"
+  cat <<EOF >"${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/build.json"
 {
   "kernel_id": "${KERNEL_ID}",
   "compiler": "${COMPILER}",
   "kernel_config": "${KERNEL_CONFIG}",
-  "patches": "${PATCH_SERIES}"
+  "patches": [$(printf '"%s"' "${PATCH_LIST[@]}" | sed 's/""//g; s/""/, "/g')]
 }
-JSON
+EOF
 }
 
 main "$@"
