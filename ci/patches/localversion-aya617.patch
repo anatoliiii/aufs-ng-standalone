@@ -1,6 +1,11 @@
 --- a/Makefile
 +++ b/Makefile
-@@
+@@ -2,7 +2,7 @@
+ VERSION = 6
+ PATCHLEVEL = 17
+ SUBLEVEL = 3
 -EXTRAVERSION =
-+EXTRAVERSION =
-+LOCALVERSION += -aya617
++EXTRAVERSION = -aya617
+ NAME = Hacked Raccoon
+
+ # *DOCUMENTATION*
