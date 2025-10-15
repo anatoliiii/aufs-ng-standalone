@@ -31,10 +31,11 @@ fetch_kernel() {
       echo "::group::Downloading ${url}" >&2
       if curl -fsSL "${url}" -o "${dest}/kernel.tar.xz"; then
         echo "::endgroup::" >&2
-        tar -xf "${dest}/kernel.tar.xz" -C "${dest}"
+        # Extract and get top dir — all stdout from tar must be suppressed except the final echo
+        tar -xf "${dest}/kernel.tar.xz" -C "${dest}" >&2
         local top
         top=$(tar -tf "${dest}/kernel.tar.xz" | head -n1 | cut -d/ -f1)
-        echo "${dest}/${top}"  # <-- ONLY this goes to stdout
+        echo "${dest}/${top}"  # ONLY output to stdout
         return 0
       fi
       echo "::warning title=Download failed::${url}" >&2
