@@ -27,7 +27,7 @@ fetch_kernel() {
         echo "::endgroup::" >&2
         tar -xf "${dest}/kernel.tar.xz" -C "${dest}"
         local top
-        top=$(tar -tf "${dest}/kernel.tar.xz" | head -1 | cut -d/ -f1)
+        top=$(tar -tf "${dest}/kernel.tar.xz" | sed -n '1p' | cut -d/ -f1)
         echo "${dest}/${top}"
         return 0
       fi

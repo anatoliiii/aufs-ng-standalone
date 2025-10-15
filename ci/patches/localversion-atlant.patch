@@ -1,6 +1,10 @@
+diff --git a/Makefile b/Makefile
 --- a/Makefile
 +++ b/Makefile
-@@
--EXTRAVERSION =
-+EXTRAVERSION =
+@@ -1,4 +1,5 @@
+ VERSION = 6
+ PATCHLEVEL = 17
+ SUBLEVEL = 3
+ EXTRAVERSION =
 +LOCALVERSION += -atlant
+
