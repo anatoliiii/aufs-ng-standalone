@@ -20,7 +20,10 @@
  * sub-routines for VFS
  */
 
+#include <linux/dcache.h>
+#include <linux/fsnotify.h>
 #include <linux/mnt_namespace.h>
+#include <linux/namei.h>
 #include <linux/nsproxy.h>
 #include <linux/security.h>
 #include <linux/splice.h>
@@ -219,8 +222,8 @@ struct dentry *vfsub_lookup_one_len_unlocked(const char *name,
 {
 	struct path path;
 
-	path.dentry = lookup_noperm_unlocked(&QSTR_LEN(name, len),
-					     ppath->dentry);
+       path.dentry = lookup_noperm_unlocked(&QSTR_LEN(name, len),
+                                            ppath->dentry);
 	if (IS_ERR(path.dentry))
 		goto out;
 	if (d_is_positive(path.dentry)) {
@@ -241,7 +244,7 @@ struct dentry *vfsub_lookup_one_len(const char *name, struct path *ppath,
 	/* VFS checks it too, but by WARN_ON_ONCE() */
 	IMustLock(d_inode(ppath->dentry));
 
-	path.dentry = lookup_noperm(&QSTR_LEN(name, len), ppath->dentry);
+       path.dentry = lookup_noperm(&QSTR_LEN(name, len), ppath->dentry);
 	if (IS_ERR(path.dentry))
 		goto out;
 	if (d_is_positive(path.dentry)) {
@@ -475,11 +478,11 @@ int vfsub_rename(struct inode *src_dir, struct dentry *src_dentry,
 		goto out;
 
 	rd.old_mnt_idmap = mnt_idmap(path->mnt);
+	rd.old_dir = src_dir;
 	rd.old_dentry = src_dentry;
-	rd.old_parent = rd.old_dentry->d_parent;
 	rd.new_mnt_idmap = rd.old_mnt_idmap;
+	rd.new_dir = dir;
 	rd.new_dentry = path->dentry;
-	rd.new_parent = rd.new_dentry->d_parent;
 	rd.delegated_inode = delegated_inode;
 	rd.flags = flags;
 	lockdep_off();
@@ -687,7 +690,13 @@ ssize_t vfsub_splice_from(struct pipe_inode_info *pipe, struct file *out,
 	ssize_t err;
 
 	lockdep_off();
-	err = do_splice_from(pipe, out, ppos, len, flags);
+	if (unlikely(!out->f_op->splice_write)) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	err = out->f_op->splice_write(pipe, out, ppos, len, flags);
+out:
 	lockdep_on();
 	if (err >= 0)
 		vfsub_update_h_iattr(&out->f_path, /*did*/NULL); /*ignore*/
