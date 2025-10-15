@@ -13,6 +13,7 @@ GIT_REF=${KERNEL_GIT_REF:-}
 # Symvers behavior (can be overridden in env)
 STRICT_SYMVERS=${STRICT_SYMVERS:-1}      # 1 = fail if MODVERSIONS=y and no Module.symvers
 GENERATE_SYMVERS=${GENERATE_SYMVERS:-0}  # 1 = run "make modules" to produce Module.symvers
+AUTO_GENERATE_SYMVERS=${AUTO_GENERATE_SYMVERS:-1}  # 1 = attempt generation when no matching symvers is found
 SYMVERS_FROM=${SYMVERS_FROM:-}            # explicit path to Module.symvers
 
 DEFAULT_AUFS_PATCHES=(
@@ -289,6 +290,7 @@ wire_module_symvers() {
   local tree=$1
   pushd "${tree}" >/dev/null
   local kernelrel; kernelrel=$(make -s kernelrelease || true)
+  local running_rel; running_rel=$(uname -r)
 
   # Priority 1: explicit path
   if [[ -n "${SYMVERS_FROM}" && -f "${SYMVERS_FROM}" ]]; then
@@ -305,16 +307,20 @@ wire_module_symvers() {
     popd >/dev/null; return 0
   fi
 
-  # Priority 3: current running kernel build dir
-  cand="/lib/modules/$(uname -r)/build/Module.symvers"
-  if [[ -f "${cand}" ]]; then
-    cp -f "${cand}" "${tree}/Module.symvers"
-    echo "::notice Using Module.symvers from ${cand}"
-    popd >/dev/null; return 0
+  # Priority 3: current running kernel build dir (only if releases match)
+  cand="/lib/modules/${running_rel}/build/Module.symvers"
+  if [[ "${kernelrel}" == "${running_rel}" ]]; then
+    if [[ -f "${cand}" ]]; then
+      cp -f "${cand}" "${tree}/Module.symvers"
+      echo "::notice Using Module.symvers from ${cand}"
+      popd >/dev/null; return 0
+    fi
+  else
+    echo "::notice title=Skip Module.symvers from running kernel::Target release ${kernelrel} != ${running_rel}" >&2
   fi
 
   # Priority 4: optionally generate (expensive)
-  if [[ "${GENERATE_SYMVERS}" == "1" ]]; then
+  if [[ "${GENERATE_SYMVERS}" == "1" || ( "${AUTO_GENERATE_SYMVERS}" == "1" && ! -f Module.symvers ) ]]; then
     echo "::notice Generating Module.symvers by building in-tree modules (this may take a while)"
     make -j"$(nproc)" modules
   fi
