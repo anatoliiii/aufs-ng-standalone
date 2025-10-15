@@ -1,6 +1,7 @@
---- a/Makefile
-+++ b/Makefile
-@@
--EXTRAVERSION =
-+EXTRAVERSION =
-+LOCALVERSION += -atlant
+diff --git a/localversion-atlant b/localversion-atlant
+new file mode 100644
+index 000000000000..b8cc960ab6a3
+--- /dev/null
++++ b/localversion-atlant
+@@ -0,0 +1 @@
++-atlant

@@ -25,8 +25,10 @@
 
 #ifdef __KERNEL__
 
+#include <linux/dcache.h>
 #include <linux/fs.h>
 #include <linux/kobject.h>
+#include <linux/version.h>
 #include "hbl.h"
 #include "lcnt.h"
 #include "rwsem.h"
@@ -49,6 +51,27 @@ struct au_wbr_create_operations {
 	int (*init)(struct super_block *sb);
 	int (*fin)(struct super_block *sb);
 };
+
+static inline const struct dentry_operations *au_sb_dop(const struct super_block *sb)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+	return sb->s_d_op;
+#else
+	return sb->__s_d_op;
+#endif
+}
+
+static inline void au_sb_set_dop(struct super_block *sb,
+                                 const struct dentry_operations *d_op)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+	sb->s_d_op = d_op;
+	if (sb->s_root)
+		d_set_d_op(sb->s_root, d_op);
+#else
+	set_default_d_op(sb, d_op);
+#endif
+}
 
 struct au_wbr_mfs {
 	struct mutex	mfs_lock; /* protect this structure */
