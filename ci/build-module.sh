@@ -22,9 +22,9 @@ fetch_kernel() {
   if [[ -n "${ARCHIVE_CANDIDATES}" ]]; then
     local url
     for url in ${ARCHIVE_CANDIDATES}; do
-      echo "::group::Downloading ${url}"
+      echo "::group::Downloading ${url}" >&2
       if curl -fsSL "${url}" -o "${dest}/kernel.tar.xz"; then
-        echo "::endgroup::"
+        echo "::endgroup::" >&2
         tar -xf "${dest}/kernel.tar.xz" -C "${dest}"
         local top
         top=$(tar -tf "${dest}/kernel.tar.xz" | head -1 | cut -d/ -f1)
@@ -32,15 +32,15 @@ fetch_kernel() {
         return 0
       fi
       echo "::warning title=Download failed::${url}" >&2
-      echo "::endgroup::"
+      echo "::endgroup::" >&2
     done
     echo "::error title=Kernel archive not found::tried ${ARCHIVE_CANDIDATES}" >&2
     return 1
   fi
   if [[ -n "${GIT_REPO}" ]]; then
-    echo "::group::Cloning ${GIT_REPO}@${GIT_REF}"
+    echo "::group::Cloning ${GIT_REPO}@${GIT_REF}" >&2
     git clone --depth 1 --branch "${GIT_REF}" "${GIT_REPO}" "${dest}/kernel"
-    echo "::endgroup::"
+    echo "::endgroup::" >&2
     echo "${dest}/kernel"
     return 0
   fi
