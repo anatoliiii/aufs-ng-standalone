@@ -14,6 +14,7 @@ DEFAULT_AUFS_PATCHES=(
   "aufs6-base.patch"
   "aufs6-mmap.patch"
   "aufs6-standalone.patch"
+  "aufs6-kbuild.patch"
 )
 
 INCLUDE_DEFAULT_AUFS_PATCHES=${INCLUDE_DEFAULT_AUFS_PATCHES:-1}
@@ -221,6 +222,17 @@ apply_patches() {
   popd >/dev/null
 }
 
+sync_aufs_sources() {
+  local tree=$1
+  local dest_dir="${tree}/fs/aufs"
+  rm -rf "${dest_dir}"
+  mkdir -p "${tree}/fs"
+  cp -a "${REPO_ROOT}/fs/aufs" "${tree}/fs/"
+  mkdir -p "${tree}/include/uapi/linux"
+  cp -a "${REPO_ROOT}/include/uapi/linux/aufs_type.h" \
+    "${tree}/include/uapi/linux/"
+}
+
 setup_compiler() {
   if [[ "${COMPILER}" != "clang" ]]; then
     return
@@ -302,6 +314,7 @@ main() {
   tree=$(fetch_kernel "${workdir}")
   mkdir -p "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}"
   apply_patches "${tree}"
+  sync_aufs_sources "${tree}"
   prepare_kernel "${tree}"
   # Сборка напрямую через kbuild выбранного ядра — без /lib/modules/$(uname -r)
   pushd "${REPO_ROOT}" >/dev/null
