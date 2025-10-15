@@ -6,13 +6,46 @@ ARTIFACT_ROOT=${ARTIFACT_ROOT:-${REPO_ROOT}/artifacts}
 KERNEL_ID=${KERNEL_ID:?KERNEL_ID is required}
 COMPILER=${COMPILER:-gcc}
 KERNEL_CONFIG=${KERNEL_CONFIG:-defconfig}
-PATCH_SERIES=${KERNEL_PATCHES:-}
 ARCHIVE_CANDIDATES_STR=${KERNEL_ARCHIVE_CANDIDATES:-}
 GIT_REPO=${KERNEL_GIT_REPO:-}
 GIT_REF=${KERNEL_GIT_REF:-}
 
+DEFAULT_AUFS_PATCHES=(
+  "aufs6-base.patch"
+  "aufs6-mmap.patch"
+  "aufs6-standalone.patch"
+)
+
+INCLUDE_DEFAULT_AUFS_PATCHES=${INCLUDE_DEFAULT_AUFS_PATCHES:-1}
+
+declare -a PATCH_LIST=()
+declare -A PATCH_SEEN=()
+
+add_patch() {
+  local patch
+  patch=$(echo "$1" | xargs)
+  [[ -z "${patch}" ]] && return
+  if [[ -n "${PATCH_SEEN[${patch}]:-}" ]]; then
+    return
+  fi
+  PATCH_LIST+=("${patch}")
+  PATCH_SEEN["${patch}"]=1
+}
+
 read -r -a ARCHIVE_CANDIDATES <<< "$ARCHIVE_CANDIDATES_STR"
-read -r -a PATCH_LIST <<< "$PATCH_SERIES"
+
+if [[ "${INCLUDE_DEFAULT_AUFS_PATCHES}" != "0" ]]; then
+  for patch in "${DEFAULT_AUFS_PATCHES[@]}"; do
+    add_patch "${patch}"
+  done
+fi
+
+if [[ -n "${KERNEL_PATCHES:-}" ]]; then
+  read -r -a USER_PATCHES <<< "${KERNEL_PATCHES}"
+  for patch in "${USER_PATCHES[@]}"; do
+    add_patch "${patch}"
+  done
+fi
 
 workdir=$(mktemp -d)
 cleanup() { rm -rf "${workdir}"; }
@@ -61,6 +94,10 @@ prepare_kernel() {
   pushd "${tree}" >/dev/null
   make mrproper
   make "${KERNEL_CONFIG}"
+  if [[ -f "${REPO_ROOT}/ci/aufs.config" ]]; then
+    ./scripts/kconfig/merge_config.sh .config "${REPO_ROOT}/ci/aufs.config"
+    yes "" | make oldconfig >/dev/null
+  fi
   make modules_prepare
   popd >/dev/null
 }
@@ -188,14 +225,10 @@ main() {
   apply_patches "${tree}"
   prepare_kernel "${tree}"
   # Сборка напрямую через kbuild выбранного ядра — без /lib/modules/$(uname -r)
-  pushd "${REPO_ROOT}/fs/aufs" >/dev/null
-  make -C "${tree}" M="$PWD" \
-       EXTRA_CFLAGS="-I${REPO_ROOT}/include -DCONFIG_AUFS_FS_MODULE -UCONFIG_AUFS -DCONFIG_AUFS_BRANCH_MAX_127 -DCONFIG_AUFS_SBILIST" \
-       clean
-  make -C "${tree}" M="$PWD" \
-       EXTRA_CFLAGS="-I${REPO_ROOT}/include -DCONFIG_AUFS_FS_MODULE -UCONFIG_AUFS -DCONFIG_AUFS_BRANCH_MAX_127 -DCONFIG_AUFS_SBILIST" \
-       -j"$(nproc)" modules
-  cp aufs.ko "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/aufs.ko"
+  pushd "${REPO_ROOT}" >/dev/null
+  make KDIR="${tree}" clean
+  make KDIR="${tree}" -j"$(nproc)" fs/aufs/aufs.ko
+  cp fs/aufs/aufs.ko "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/aufs.ko"
   popd >/dev/null
 
   local patches_json
