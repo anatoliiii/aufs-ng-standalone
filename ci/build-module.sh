@@ -129,14 +129,16 @@ main() {
   setup_compiler
   local tree
   tree=$(fetch_kernel "${workdir}")
-  apply_patches "${tree}"
-  prepare_kernel "${tree}"
-
   mkdir -p "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}"
-  pushd "${REPO_ROOT}" >/dev/null
-  KDIR="${tree}" make -j"$(nproc)" clean
-  KDIR="${tree}" make -j"$(nproc)"
-  cp fs/aufs/aufs.ko "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/aufs.ko"
+  # Сборка напрямую через kbuild выбранного ядра — без /lib/modules/$(uname -r)
+  pushd "${REPO_ROOT}/fs/aufs" >/dev/null
+  make -C "${tree}" M="$PWD" \
+       EXTRA_CFLAGS="-I${REPO_ROOT}/include -DCONFIG_AUFS_FS_MODULE -UCONFIG_AUFS -DCONFIG_AUFS_BRANCH_MAX_127 -DCONFIG_AUFS_SBILIST" \
+       clean
+  make -C "${tree}" M="$PWD" \
+       EXTRA_CFLAGS="-I${REPO_ROOT}/include -DCONFIG_AUFS_FS_MODULE -UCONFIG_AUFS -DCONFIG_AUFS_BRANCH_MAX_127 -DCONFIG_AUFS_SBILIST" \
+       -j"$(nproc)" modules
+  cp aufs.ko "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/aufs.ko"
   popd >/dev/null
 
   local patches_json
