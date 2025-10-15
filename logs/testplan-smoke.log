@@ -1,0 +1,11 @@
+== AUCONF PRESETS ==
+debug: Turns on deep tracing knobs and relaxed sysrq for kernel debugging.
+max-branches: Enables 32k branch table support for dense layer stacks.
+release: Matches upstream defaults targeting production Aya OS builds.
+== OVERLAY MOUNT ==
+DRY-RUN: mount -i -t overlay overlay /tmp/tmp.WASoqsL7Ov/mnt -o lowerdir=/tmp/tmp.WASoqsL7Ov/lowerB:/tmp/tmp.WASoqsL7Ov/lowerA,upperdir=/tmp/tmp.WASoqsL7Ov/upper,workdir=/tmp/tmp.WASoqsL7Ov/work
+== REAL MOUNT EXECUTION ==
+mount: /tmp/tmp.WASoqsL7Ov/mnt: permission denied.
+       dmesg(1) may have more information after failed mount system call.
+unionctl: command failed with exit code 32
+WARN overlay mount failed; skipping runtime smoke metrics

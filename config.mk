@@ -2,6 +2,7 @@
 
 # Kconfig
 # instead of setting 'n', leave it blank when you disable it.
+# this file can be regenerated via tools/auconf
 CONFIG_AUFS_BRANCH_MAX_127 = y
 CONFIG_AUFS_BRANCH_MAX_511 =
 CONFIG_AUFS_BRANCH_MAX_1023 =
@@ -17,7 +18,7 @@ CONFIG_AUFS_SHWH =
 CONFIG_AUFS_BR_RAMFS =
 CONFIG_AUFS_BR_FUSE =
 CONFIG_AUFS_BR_HFSPLUS =
-CONFIG_AUFS_DEBUG = y
+CONFIG_AUFS_DEBUG ?= n
 CONFIG_AUFS_DIRREN =
 CONFIG_AUFS_MAGIC_SYSRQ =
 CONFIG_AUFS_BDEV_LOOP =
@@ -25,6 +26,12 @@ CONFIG_AUFS_INO_T_64 =
 CONFIG_AUFS_POLL =
 
 ########################################
+
+ifeq ($(CONFIG_AUFS_DEBUG),y)
+override CONFIG_AUFS_DEBUG := y
+else
+override CONFIG_AUFS_DEBUG :=
+endif
 
 define conf
 ifdef $(1)
