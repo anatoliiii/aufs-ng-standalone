@@ -21,29 +21,31 @@ fetch_kernel() {
   if [[ -n "${ARCHIVE_CANDIDATES}" ]]; then
     local url
     for url in ${ARCHIVE_CANDIDATES}; do
-      echo "::group::Downloading ${url}"
+      # все служебные маркеры — в stderr, а не в stdout
+      >&2 echo "::group::Downloading ${url}"
       if curl -fsSL "${url}" -o "${dest}/kernel.tar.xz"; then
-        echo "::endgroup::"
+        >&2 echo "::endgroup::"
         tar -C "${dest}" -xf "${dest}/kernel.tar.xz"
+        # берем первый каталог в dest (dest — пустой mktemp перед распаковкой)
         local top
-        top=$(tar -tf "${dest}/kernel.tar.xz" | head -1 | cut -d/ -f1)
-        echo "${dest}/${top}"
+        top=$(find "${dest}" -mindepth 1 -maxdepth 1 -type d -printf '%p\n' | head -n1)
+        printf '%s\n' "${top}"
         return 0
       fi
-      echo "::warning title=Download failed::${url}" >&2
-      echo "::endgroup::"
+      >&2 echo "::warning title=Download failed::${url}"
+      >&2 echo "::endgroup::"
     done
-    echo "::error title=Kernel archive not found::tried ${ARCHIVE_CANDIDATES}" >&2
+    >&2 echo "::error title=Kernel archive not found::tried ${ARCHIVE_CANDIDATES}"
     return 1
   fi
   if [[ -n "${GIT_REPO}" ]]; then
-    echo "::group::Cloning ${GIT_REPO}@${GIT_REF}"
+    >&2 echo "::group::Cloning ${GIT_REPO}@${GIT_REF}"
     git clone --depth 1 --branch "${GIT_REF}" "${GIT_REPO}" "${dest}/kernel"
-    echo "::endgroup::"
-    echo "${dest}/kernel"
+    >&2 echo "::endgroup::"
+    printf '%s\n' "${dest}/kernel"
     return 0
   fi
-  echo "::error title=No kernel source specified::set KERNEL_ARCHIVE_CANDIDATES or KERNEL_GIT_REPO" >&2
+  >&2 echo "::error title=No kernel source specified::set KERNEL_ARCHIVE_CANDIDATES or KERNEL_GIT_REPO"
   return 1
 }
 
@@ -52,9 +54,9 @@ apply_patches() {
   [[ -z "${PATCH_SERIES}" ]] && return 0
   pushd "${tree}" >/dev/null
   for patch in ${PATCH_SERIES}; do
-    echo "::group::Applying ${patch}"
+    >&2 echo "::group::Applying ${patch}"
     patch -p1 < "${REPO_ROOT}/${patch}"
-    echo "::endgroup::"
+    >&2 echo "::endgroup::"
   done
   popd >/dev/null
 }
@@ -79,9 +81,9 @@ setup_compiler() {
   fi
 }
 
+# советую собирать AUFS как внешний модуль прямо против KDIR=${tree}
 build_aufs_module() {
   local tree=$1
-  # AUFS как внешний модуль: строго против KDIR=tree
   make -C "${tree}" M="${REPO_ROOT}/fs/aufs" clean
   make -C "${tree}" M="${REPO_ROOT}/fs/aufs" modules
 }
@@ -89,7 +91,7 @@ build_aufs_module() {
 main() {
   setup_compiler
   local tree
-  tree=$(fetch_kernel "${workdir}")
+  tree=$(fetch_kernel "${workdir}")   # stdout теперь = ТОЛЬКО путь
   apply_patches "${tree}"
   prepare_kernel "${tree}"
 
