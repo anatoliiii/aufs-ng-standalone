@@ -89,14 +89,93 @@ fetch_kernel() {
   return 1
 }
 
+apply_config_fragment() {
+  local fragment=$1
+  [[ ! -f "${fragment}" ]] && return 0
+
+  local -a expectations=()
+
+  while IFS= read -r raw; do
+    [[ -z "${raw}" ]] && continue
+
+    # Preserve lines of the form "# CONFIG_FOO is not set".  Everything else
+    # can ignore comments and whitespace.
+    case "${raw}" in
+      "# CONFIG_"*" is not set")
+        local symbol=${raw#\# }
+        symbol=${symbol% is not set}
+        symbol=${symbol#CONFIG_}
+        ./scripts/config --file .config --disable "${symbol}"
+        expectations+=("${symbol}:n")
+        continue
+        ;;
+      "#"*)
+        continue
+        ;;
+    esac
+
+    local line=${raw%%#*}
+    line=$(echo "${line}" | xargs)
+    [[ -z "${line}" ]] && continue
+
+    case "${line}" in
+      CONFIG_*=m)
+        local symbol=${line%%=*}
+        symbol=${symbol#CONFIG_}
+        ./scripts/config --file .config --module "${symbol}"
+        expectations+=("${symbol}:m")
+        ;;
+      CONFIG_*=y)
+        local symbol=${line%%=*}
+        symbol=${symbol#CONFIG_}
+        ./scripts/config --file .config --enable "${symbol}"
+        expectations+=("${symbol}:y")
+        ;;
+      CONFIG_*=n)
+        local symbol=${line%%=*}
+        symbol=${symbol#CONFIG_}
+        ./scripts/config --file .config --disable "${symbol}"
+        expectations+=("${symbol}:n")
+        ;;
+    esac
+  done < "${fragment}"
+
+  make olddefconfig >/dev/null
+
+  local missing=0
+  local entry
+  for entry in "${expectations[@]}"; do
+    local symbol=${entry%%:*}
+    local want=${entry#*:}
+    case "${want}" in
+      m|y)
+        if ! grep -q "^CONFIG_${symbol}=${want}$" .config; then
+          printf 'Expected CONFIG_%s=%s in merged config\n' "${symbol}" "${want}" >&2
+          missing=1
+        fi
+        ;;
+      n)
+        if ! grep -q "^# CONFIG_${symbol} is not set" .config; then
+          printf 'Expected # CONFIG_%s is not set in merged config\n' "${symbol}" >&2
+          missing=1
+        fi
+        ;;
+    esac
+  done
+
+  if [[ ${missing} -ne 0 ]]; then
+    printf '::error title=Incomplete kernel config::Failed to apply %s\n' "${fragment}" >&2
+    exit 1
+  fi
+}
+
 prepare_kernel() {
   local tree=$1
   pushd "${tree}" >/dev/null
   make mrproper
   make "${KERNEL_CONFIG}"
   if [[ -f "${REPO_ROOT}/ci/aufs.config" ]]; then
-    ./scripts/kconfig/merge_config.sh .config "${REPO_ROOT}/ci/aufs.config"
-    yes "" | make oldconfig >/dev/null
+    apply_config_fragment "${REPO_ROOT}/ci/aufs.config"
   fi
   make modules_prepare
   popd >/dev/null
