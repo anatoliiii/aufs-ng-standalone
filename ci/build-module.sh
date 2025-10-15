@@ -72,9 +72,64 @@ apply_patches() {
 }
 
 setup_compiler() {
-  if [[ "${COMPILER}" == "clang" ]]; then
-    export LLVM=1
-    export CC=clang
+  if [[ "${COMPILER}" != "clang" ]]; then
+    return
+  fi
+
+  local required_major=15
+  local clang_bin=""
+  local clang_major=""
+
+  if command -v clang >/dev/null 2>&1; then
+    clang_major=$(clang --version | sed -n '1s/.*version \([0-9]\+\).*/\1/p')
+    if [[ -n "${clang_major}" && ${clang_major} -ge ${required_major} ]]; then
+      clang_bin=$(command -v clang)
+    fi
+  fi
+
+  if [[ -z "${clang_bin}" ]]; then
+    local candidate
+    for candidate in $(seq 20 -1 ${required_major}); do
+      if command -v "clang-${candidate}" >/dev/null 2>&1; then
+        clang_bin=$(command -v "clang-${candidate}")
+        clang_major=${candidate}
+        break
+      fi
+    done
+  fi
+
+  if [[ -z "${clang_bin}" ]]; then
+    echo "::error title=Missing clang::Need clang ${required_major} or newer for kernel build" >&2
+    exit 1
+  fi
+
+  export LLVM=1
+
+  if [[ "${clang_bin}" =~ clang-([0-9]+)$ ]]; then
+    export LLVM_SUFFIX="-${BASH_REMATCH[1]}"
+  else
+    unset LLVM_SUFFIX
+  fi
+
+  export CC="${clang_bin}"
+  export HOSTCC="${clang_bin}"
+
+  local hostcxx_candidate="clang++"
+  if [[ -n "${LLVM_SUFFIX:-}" ]]; then
+    hostcxx_candidate="clang++${LLVM_SUFFIX}"
+  fi
+  if command -v "${hostcxx_candidate}" >/dev/null 2>&1; then
+    export HOSTCXX="${hostcxx_candidate}"
+  fi
+
+  if [[ -n "${LLVM_SUFFIX:-}" ]]; then
+    if command -v "ld.lld${LLVM_SUFFIX}" >/dev/null 2>&1; then
+      export LD="ld.lld${LLVM_SUFFIX}"
+      return
+    fi
+  fi
+
+  if command -v ld.lld >/dev/null 2>&1; then
     export LD=ld.lld
   fi
 }
