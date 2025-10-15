@@ -543,12 +543,20 @@ int vfsub_rename(struct inode *src_dir, struct dentry *src_dentry,
 	if (unlikely(err))
 		goto out;
 
-	rd.old_mnt_idmap = mnt_idmap(path->mnt);
-	rd.old_dir = src_dir;
-	rd.old_dentry = src_dentry;
-	rd.new_mnt_idmap = rd.old_mnt_idmap;
-	rd.new_dir = dir;
-	rd.new_dentry = path->dentry;
+        rd.old_mnt_idmap = mnt_idmap(path->mnt);
+#ifdef AUFS_KBUILD_RENAMEDATA_HAS_PARENTS
+        rd.old_parent = src_dentry->d_parent;
+#else
+        rd.old_dir = src_dir;
+#endif
+        rd.old_dentry = src_dentry;
+        rd.new_mnt_idmap = rd.old_mnt_idmap;
+#ifdef AUFS_KBUILD_RENAMEDATA_HAS_PARENTS
+        rd.new_parent = d->d_parent;
+#else
+        rd.new_dir = dir;
+#endif
+        rd.new_dentry = path->dentry;
 	rd.delegated_inode = delegated_inode;
 	rd.flags = flags;
 	lockdep_off();

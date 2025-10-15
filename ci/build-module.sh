@@ -6,13 +6,87 @@ ARTIFACT_ROOT=${ARTIFACT_ROOT:-${REPO_ROOT}/artifacts}
 KERNEL_ID=${KERNEL_ID:?KERNEL_ID is required}
 COMPILER=${COMPILER:-gcc}
 KERNEL_CONFIG=${KERNEL_CONFIG:-defconfig}
-PATCH_SERIES=${KERNEL_PATCHES:-}
 ARCHIVE_CANDIDATES_STR=${KERNEL_ARCHIVE_CANDIDATES:-}
 GIT_REPO=${KERNEL_GIT_REPO:-}
 GIT_REF=${KERNEL_GIT_REF:-}
 
+DEFAULT_AUFS_PATCHES=(
+  "aufs6-base.patch"
+  "aufs6-mmap.patch"
+  "aufs6-standalone.patch"
+  "aufs6-kbuild.patch"
+)
+
+INCLUDE_DEFAULT_AUFS_PATCHES=${INCLUDE_DEFAULT_AUFS_PATCHES:-1}
+APT_HAS_UPDATED=0
+
+declare -a PATCH_LIST=()
+declare -A PATCH_SEEN=()
+
+add_patch() {
+  local patch
+  patch=$(echo "$1" | xargs)
+  [[ -z "${patch}" ]] && return
+  if [[ -n "${PATCH_SEEN[${patch}]:-}" ]]; then
+    return
+  fi
+  PATCH_LIST+=("${patch}")
+  PATCH_SEEN["${patch}"]=1
+}
+
 read -r -a ARCHIVE_CANDIDATES <<< "$ARCHIVE_CANDIDATES_STR"
-read -r -a PATCH_LIST <<< "$PATCH_SERIES"
+
+if [[ "${INCLUDE_DEFAULT_AUFS_PATCHES}" != "0" ]]; then
+  for patch in "${DEFAULT_AUFS_PATCHES[@]}"; do
+    add_patch "${patch}"
+  done
+fi
+
+ensure_build_dependencies() {
+  local -a missing=()
+  local tool
+  for tool in flex bison bc; do
+    if ! command -v "${tool}" >/dev/null 2>&1; then
+      case " ${missing[*]} " in
+        *" ${tool} "*) ;;
+        *) missing+=("${tool}");;
+      esac
+    fi
+  done
+
+  if [[ ! -f /usr/include/gelf.h ]]; then
+    case " ${missing[*]} " in
+      *" libelf-dev "*) ;;
+      *) missing+=("libelf-dev");;
+    esac
+  fi
+
+  [[ ${#missing[@]} -eq 0 ]] && return
+
+  local -a runner=()
+  if [[ $(id -u) -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+    runner+=(sudo)
+  fi
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    printf '::error title=Missing build tools::need %s\n' "${missing[*]}" >&2
+    exit 1
+  fi
+
+  if [[ ${APT_HAS_UPDATED} -eq 0 ]]; then
+    "${runner[@]}" apt-get update
+    APT_HAS_UPDATED=1
+  fi
+
+  "${runner[@]}" apt-get install -y --no-install-recommends "${missing[@]}"
+}
+
+if [[ -n "${KERNEL_PATCHES:-}" ]]; then
+  read -r -a USER_PATCHES <<< "${KERNEL_PATCHES}"
+  for patch in "${USER_PATCHES[@]}"; do
+    add_patch "${patch}"
+  done
+fi
 
 workdir=$(mktemp -d)
 cleanup() { rm -rf "${workdir}"; }
@@ -56,13 +130,144 @@ fetch_kernel() {
   return 1
 }
 
+apply_config_fragment() {
+  local fragment=$1
+  [[ ! -f "${fragment}" ]] && return 0
+
+  local -a expectations=()
+
+  while IFS= read -r raw; do
+    [[ -z "${raw}" ]] && continue
+
+    # Preserve lines of the form "# CONFIG_FOO is not set".  Everything else
+    # can ignore comments and whitespace.
+    case "${raw}" in
+      "# CONFIG_"*" is not set")
+        local symbol=${raw#\# }
+        symbol=${symbol% is not set}
+        symbol=${symbol#CONFIG_}
+        ./scripts/config --file .config --disable "${symbol}"
+        expectations+=("${symbol}:n")
+        continue
+        ;;
+      "#"*)
+        continue
+        ;;
+    esac
+
+    local line=${raw%%#*}
+    line=$(echo "${line}" | xargs)
+    [[ -z "${line}" ]] && continue
+
+    case "${line}" in
+      CONFIG_*=m)
+        local symbol=${line%%=*}
+        symbol=${symbol#CONFIG_}
+        ./scripts/config --file .config --module "${symbol}"
+        expectations+=("${symbol}:m")
+        ;;
+      CONFIG_*=y)
+        local symbol=${line%%=*}
+        symbol=${symbol#CONFIG_}
+        ./scripts/config --file .config --enable "${symbol}"
+        expectations+=("${symbol}:y")
+        ;;
+      CONFIG_*=n)
+        local symbol=${line%%=*}
+        symbol=${symbol#CONFIG_}
+        ./scripts/config --file .config --disable "${symbol}"
+        expectations+=("${symbol}:n")
+        ;;
+    esac
+  done < "${fragment}"
+
+  make olddefconfig >/dev/null
+
+  local missing=0
+  local entry
+  for entry in "${expectations[@]}"; do
+    local symbol=${entry%%:*}
+    local want=${entry#*:}
+    case "${want}" in
+      m|y)
+        if ! grep -q "^CONFIG_${symbol}=${want}$" .config; then
+          printf 'Expected CONFIG_%s=%s in merged config\n' "${symbol}" "${want}" >&2
+          missing=1
+        fi
+        ;;
+      n)
+        if ! grep -q "^# CONFIG_${symbol} is not set" .config; then
+          printf 'Expected # CONFIG_%s is not set in merged config\n' "${symbol}" >&2
+          missing=1
+        fi
+        ;;
+    esac
+  done
+
+  if [[ ${missing} -ne 0 ]]; then
+    printf '::error title=Incomplete kernel config::Failed to apply %s\n' "${fragment}" >&2
+    exit 1
+  fi
+}
+
 prepare_kernel() {
   local tree=$1
   pushd "${tree}" >/dev/null
   make mrproper
   make "${KERNEL_CONFIG}"
+  if [[ -f "${REPO_ROOT}/ci/aufs.config" ]]; then
+    apply_config_fragment "${REPO_ROOT}/ci/aufs.config"
+  fi
   make modules_prepare
   popd >/dev/null
+}
+
+detect_vfs_compat_flags() {
+  local tree=$1
+  local fs_header="${tree}/include/linux/fs.h"
+  local dcache_header="${tree}/include/linux/dcache.h"
+  local -a flags=()
+
+  if python - "$fs_header" <<'PY'
+import re, sys
+path = sys.argv[1]
+try:
+    data = open(path).read()
+except FileNotFoundError:
+    sys.exit(1)
+sys.exit(0 if re.search(r'\bs_d_op\b', data) else 1)
+PY
+  then
+    flags+=('-DAUFS_KBUILD_HAS_SB_S_D_OP')
+  fi
+
+  if python - "$dcache_header" <<'PY'
+import re, sys
+path = sys.argv[1]
+try:
+    data = open(path).read()
+except FileNotFoundError:
+    sys.exit(1)
+sys.exit(0 if re.search(r'\bd_set_d_op\b', data) else 1)
+PY
+  then
+    flags+=('-DAUFS_KBUILD_HAS_D_SET_D_OP')
+  fi
+
+  if python - "$fs_header" <<'PY'
+import re, sys
+path = sys.argv[1]
+try:
+    data = open(path).read()
+except FileNotFoundError:
+    sys.exit(1)
+sys.exit(0 if re.search(r'\bold_parent\s*;', data) else 1)
+PY
+  then
+    flags+=('-DAUFS_KBUILD_RENAMEDATA_HAS_PARENTS')
+  fi
+
+  printf '%s' "${flags[*]}"
 }
 
 apply_one_patch() {
@@ -103,6 +308,17 @@ apply_patches() {
     log "::endgroup::"
   done
   popd >/dev/null
+}
+
+sync_aufs_sources() {
+  local tree=$1
+  local dest_dir="${tree}/fs/aufs"
+  rm -rf "${dest_dir}"
+  mkdir -p "${tree}/fs"
+  cp -a "${REPO_ROOT}/fs/aufs" "${tree}/fs/"
+  mkdir -p "${tree}/include/uapi/linux"
+  cp -a "${REPO_ROOT}/include/uapi/linux/aufs_type.h" \
+    "${tree}/include/uapi/linux/"
 }
 
 setup_compiler() {
@@ -181,21 +397,28 @@ json_array_from_list() {
 }
 
 main() {
+  ensure_build_dependencies
   setup_compiler
   local tree
   tree=$(fetch_kernel "${workdir}")
   mkdir -p "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}"
   apply_patches "${tree}"
+  sync_aufs_sources "${tree}"
   prepare_kernel "${tree}"
+  export AUFS_VFS_COMPAT_FLAGS="$(detect_vfs_compat_flags "${tree}")"
+  local symvers="${tree}/Module.symvers"
+  if [[ ! -f "${symvers}" ]]; then
+    log "::warning title=Missing Module.symvers::${symvers} not found, enabling KBUILD_MODPOST_WARN"
+    : >"${symvers}"
+    export KBUILD_MODPOST_WARN=1
+  else
+    unset KBUILD_MODPOST_WARN
+  fi
   # Сборка напрямую через kbuild выбранного ядра — без /lib/modules/$(uname -r)
-  pushd "${REPO_ROOT}/fs/aufs" >/dev/null
-  make -C "${tree}" M="$PWD" \
-       EXTRA_CFLAGS="-I${REPO_ROOT}/include -DCONFIG_AUFS_FS_MODULE -UCONFIG_AUFS -DCONFIG_AUFS_BRANCH_MAX_127 -DCONFIG_AUFS_SBILIST" \
-       clean
-  make -C "${tree}" M="$PWD" \
-       EXTRA_CFLAGS="-I${REPO_ROOT}/include -DCONFIG_AUFS_FS_MODULE -UCONFIG_AUFS -DCONFIG_AUFS_BRANCH_MAX_127 -DCONFIG_AUFS_SBILIST" \
-       -j"$(nproc)" modules
-  cp aufs.ko "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/aufs.ko"
+  pushd "${REPO_ROOT}" >/dev/null
+  make KDIR="${tree}" clean
+  make KDIR="${tree}" -j"$(nproc)" fs/aufs/aufs.ko
+  cp fs/aufs/aufs.ko "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/aufs.ko"
   popd >/dev/null
 
   local patches_json

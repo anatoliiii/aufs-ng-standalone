@@ -1141,10 +1141,10 @@ static int au_do_d_reval(struct au_d_reval_args *args)
 	di_downgrade_lock(dentry, AuLock_IR);
 
 	err = -EINVAL;
-	if (!(args->flags & (LOOKUP_OPEN | LOOKUP_EMPTY))
-	    && inode
-	    && !(inode->i_state && I_LINKABLE)
-	    && (IS_DEADDIR(inode) || !vfsub_inode_nlink(inode, AU_I_AUFS))) {
+        if (!(args->flags & (LOOKUP_OPEN | LOOKUP_EMPTY))
+            && inode
+            && !(inode->i_state & I_LINKABLE)
+            && (IS_DEADDIR(inode) || !vfsub_inode_nlink(inode, AU_I_AUFS))) {
 		AuTraceErr(err);
 		goto out_inval;
 	}
