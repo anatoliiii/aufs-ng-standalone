@@ -18,6 +18,7 @@ DEFAULT_AUFS_PATCHES=(
 )
 
 INCLUDE_DEFAULT_AUFS_PATCHES=${INCLUDE_DEFAULT_AUFS_PATCHES:-1}
+APT_HAS_UPDATED=0
 
 declare -a PATCH_LIST=()
 declare -A PATCH_SEEN=()
@@ -40,6 +41,45 @@ if [[ "${INCLUDE_DEFAULT_AUFS_PATCHES}" != "0" ]]; then
     add_patch "${patch}"
   done
 fi
+
+ensure_build_dependencies() {
+  local -a missing=()
+  local tool
+  for tool in flex bison bc; do
+    if ! command -v "${tool}" >/dev/null 2>&1; then
+      case " ${missing[*]} " in
+        *" ${tool} "*) ;;
+        *) missing+=("${tool}");;
+      esac
+    fi
+  done
+
+  if [[ ! -f /usr/include/gelf.h ]]; then
+    case " ${missing[*]} " in
+      *" libelf-dev "*) ;;
+      *) missing+=("libelf-dev");;
+    esac
+  fi
+
+  [[ ${#missing[@]} -eq 0 ]] && return
+
+  local -a runner=()
+  if [[ $(id -u) -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+    runner+=(sudo)
+  fi
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    printf '::error title=Missing build tools::need %s\n' "${missing[*]}" >&2
+    exit 1
+  fi
+
+  if [[ ${APT_HAS_UPDATED} -eq 0 ]]; then
+    "${runner[@]}" apt-get update
+    APT_HAS_UPDATED=1
+  fi
+
+  "${runner[@]}" apt-get install -y --no-install-recommends "${missing[@]}"
+}
 
 if [[ -n "${KERNEL_PATCHES:-}" ]]; then
   read -r -a USER_PATCHES <<< "${KERNEL_PATCHES}"
@@ -182,6 +222,54 @@ prepare_kernel() {
   popd >/dev/null
 }
 
+detect_vfs_compat_flags() {
+  local tree=$1
+  local fs_header="${tree}/include/linux/fs.h"
+  local dcache_header="${tree}/include/linux/dcache.h"
+  local -a flags=()
+
+  if python - "$fs_header" <<'PY'
+import re, sys
+path = sys.argv[1]
+try:
+    data = open(path).read()
+except FileNotFoundError:
+    sys.exit(1)
+sys.exit(0 if re.search(r'\bs_d_op\b', data) else 1)
+PY
+  then
+    flags+=('-DAUFS_KBUILD_HAS_SB_S_D_OP')
+  fi
+
+  if python - "$dcache_header" <<'PY'
+import re, sys
+path = sys.argv[1]
+try:
+    data = open(path).read()
+except FileNotFoundError:
+    sys.exit(1)
+sys.exit(0 if re.search(r'\bd_set_d_op\b', data) else 1)
+PY
+  then
+    flags+=('-DAUFS_KBUILD_HAS_D_SET_D_OP')
+  fi
+
+  if python - "$fs_header" <<'PY'
+import re, sys
+path = sys.argv[1]
+try:
+    data = open(path).read()
+except FileNotFoundError:
+    sys.exit(1)
+sys.exit(0 if re.search(r'\bold_parent\s*;', data) else 1)
+PY
+  then
+    flags+=('-DAUFS_KBUILD_RENAMEDATA_HAS_PARENTS')
+  fi
+
+  printf '%s' "${flags[*]}"
+}
+
 apply_one_patch() {
   local tree=$1
   local patch_file=$2
@@ -309,6 +397,7 @@ json_array_from_list() {
 }
 
 main() {
+  ensure_build_dependencies
   setup_compiler
   local tree
   tree=$(fetch_kernel "${workdir}")
@@ -316,6 +405,15 @@ main() {
   apply_patches "${tree}"
   sync_aufs_sources "${tree}"
   prepare_kernel "${tree}"
+  export AUFS_VFS_COMPAT_FLAGS="$(detect_vfs_compat_flags "${tree}")"
+  local symvers="${tree}/Module.symvers"
+  if [[ ! -f "${symvers}" ]]; then
+    log "::warning title=Missing Module.symvers::${symvers} not found, enabling KBUILD_MODPOST_WARN"
+    : >"${symvers}"
+    export KBUILD_MODPOST_WARN=1
+  else
+    unset KBUILD_MODPOST_WARN
+  fi
   # Сборка напрямую через kbuild выбранного ядра — без /lib/modules/$(uname -r)
   pushd "${REPO_ROOT}" >/dev/null
   make KDIR="${tree}" clean

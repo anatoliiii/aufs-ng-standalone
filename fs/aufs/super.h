@@ -54,7 +54,7 @@ struct au_wbr_create_operations {
 
 static inline const struct dentry_operations *au_sb_dop(const struct super_block *sb)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+#ifdef AUFS_KBUILD_HAS_SB_S_D_OP
 	return sb->s_d_op;
 #else
 	return sb->__s_d_op;
@@ -62,12 +62,14 @@ static inline const struct dentry_operations *au_sb_dop(const struct super_block
 }
 
 static inline void au_sb_set_dop(struct super_block *sb,
-                                 const struct dentry_operations *d_op)
+			 const struct dentry_operations *d_op)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+#ifdef AUFS_KBUILD_HAS_SB_S_D_OP
 	sb->s_d_op = d_op;
+#ifdef AUFS_KBUILD_HAS_D_SET_D_OP
 	if (sb->s_root)
 		d_set_d_op(sb->s_root, d_op);
+#endif
 #else
 	set_default_d_op(sb, d_op);
 #endif
