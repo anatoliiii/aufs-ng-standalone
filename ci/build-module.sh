@@ -352,12 +352,23 @@ main() {
   export AUFS_VFS_COMPAT_FLAGS="$(detect_vfs_compat_flags "${tree}")"
 
   # Build external module against chosen kernel tree
-  pushd "${REPO_ROOT}" >/dev/null
-  make KDIR="${tree}" clean
-  make KDIR="${tree}" -j"$(nproc)" \
+  # Build AUFS as a proper out-of-tree kernel module
+  local aufs_src="${REPO_ROOT}/fs/aufs"
+  pushd "${aufs_src}" >/dev/null
+  
+  # Pass flags via EXTRA_CFLAGS (standard kbuild mechanism)
+  make -C "${tree}" M="${PWD}" clean
+  make -C "${tree}" M="${PWD}" \
     EXTRA_CFLAGS="-I${REPO_ROOT}/include ${AUFS_VFS_COMPAT_FLAGS}" \
-    fs/aufs/aufs.ko
-  cp fs/aufs/aufs.ko "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/aufs.ko"
+    -j"$(nproc)" modules
+  
+  # Verify the module was built
+  if [[ ! -f aufs.ko ]]; then
+    log "::error::aufs.ko not found after build!" >&2
+    exit 1
+  fi
+  
+  cp aufs.ko "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/aufs.ko"
   popd >/dev/null
 
   # Optional: vermagic hint (if kmod/modinfo available)
