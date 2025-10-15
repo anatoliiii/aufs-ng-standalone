@@ -130,6 +130,8 @@ main() {
   local tree
   tree=$(fetch_kernel "${workdir}")
   mkdir -p "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}"
+  apply_patches "${tree}"
+  prepare_kernel "${tree}"
   # Сборка напрямую через kbuild выбранного ядра — без /lib/modules/$(uname -r)
   pushd "${REPO_ROOT}/fs/aufs" >/dev/null
   make -C "${tree}" M="$PWD" \
