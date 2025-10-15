@@ -1,33 +1,33 @@
-# Aya OS AUFS Engineering Report
+# Инженерный отчёт по AUFS для Aya OS
 
-## Executive Summary
+## Резюме
 
-The current AUFS NG standalone tree is structurally ready for Aya OS integration. The module builds reproducibly once kernel headers are available, and the new tooling (`auconf`, `unionctl`) covers the management surface needed by LayerControl and TimeLayer. Residual work centres on kernel header availability in CI and broadening runtime validation (xfstests, perf). Overall recommendation: **Go**, contingent on completing the test plan and resolving overlayfs permission gaps observed during container smoke runs.【F:config.mk†L1-L76】【F:fs/aufs/Makefile†L1-L17】【F:tools/unionctl†L1-L247】
+Текущее дерево AUFS NG готово к интеграции в Aya OS. Модуль собирается воспроизводимо при наличии заголовков ядра, а новое инструментарий (`auconf`, `unionctl`) покрывает управленческий контур LayerControl и TimeLayer. Остаточные задачи касаются доставки заголовков в CI и расширения валидации времени выполнения (xfstests, perf). Итоговая рекомендация: **Go**, при условии завершения тест-плана и устранения запретов overlayfs, замеченных в контейнерных smoke-прогонах.【F:config.mk†L1-L76】【F:fs/aufs/Makefile†L1-L17】【F:tools/unionctl†L1-L247】
 
-## Metrics Snapshot
+## Снимок метрик
 
-| Check | Backend | Result | Notes |
-|-------|---------|--------|-------|
-| `make` against host kernel headers | AUFS | ❌ | Missing `/lib/modules/$(uname -r)/build` in container; CI workflow mitigates by fetching explicit kernel trees.【4fa0c6†L1-L10】【F:.github/workflows/build.yml†L1-L78】 |
-| `tests/smoke.sh` mount attempt | overlayfs (baseline) | ⚠️ | Permission denied in sandbox; unionctl dry-run verified command synthesis.【F:logs/testplan-smoke.log†L1-L13】 |
-| `auconf --list-presets` | tooling | ✅ | Presets surfaced for release/debug/max-branches flows.【F:logs/testplan-smoke.log†L1-L5】 |
+| Проверка | Бэкенд | Результат | Комментарий |
+|----------|--------|-----------|-------------|
+| `make` против заголовков хоста | AUFS | ❌ | В контейнере отсутствует `/lib/modules/$(uname -r)/build`; workflow CI подхватывает полные деревья ядра и устраняет дефицит.【4fa0c6†L1-L10】【F:.github/workflows/build.yml†L1-L78】 |
+| Попытка `tests/smoke.sh` | overlayfs (база) | ⚠️ | В песочнице запрещён overlayfs; dry-run `unionctl` подтвердил корректность синтеза команд.【F:logs/testplan-smoke.log†L1-L13】 |
+| `auconf --list-presets` | tooling | ✅ | Пресеты доступны для release/debug/max-branches сценариев.【F:logs/testplan-smoke.log†L1-L5】 |
 
-Full benchmark and soak metrics will be populated once the CI matrix delivers modules for Aya’s kernel set and the TESTPLAN is executed across hardware targets.【F:TESTPLAN.md†L1-L80】
+Полные бенчмарки и soak-метрики будут заполнены после того, как матрица CI соберёт модули под ядра Aya и TESTPLAN выполнится на аппаратных стендах.【F:TESTPLAN.md†L1-L120】
 
-## Risk Register
+## Реестр рисков
 
-1. **Kernel drift** — AUFS remains out-of-tree; periodic rebasing against Linux 6.10+ requires sustained maintenance. Mitigation: automated CI matrix with both GCC and Clang catches breakage early.【F:.github/workflows/build.yml†L1-L78】
-2. **Namespace hardening** — enabling `allow_userns` exposes AUFS mounts to rootless sandboxes. Gate via deployment policy and audit per-release.【F:fs/aufs/module.c†L148-L213】【F:docs/ADMIN.md†L1-L24】
-3. **Missing features (nested mounts, stats)** — upstream disabled several features in aufs6; Aya must avoid depending on them or re-enable explicitly.【F:Documentation/filesystems/aufs/README†L82-L108】
-4. **Overlayfs fallback parity** — baseline overlayfs tests currently fail under container permissions; ensure host CI runners allow overlayfs to gather regression data.【F:logs/testplan-smoke.log†L1-L13】
+1. **Дрейф ядра** — AUFS остаётся вне дерева; регулярное ребейзирование на Linux 6.10+ требует сопровождения. Митигируется матрицей CI с GCC/Clang, ловящей регрессии ранним этапом.【F:.github/workflows/build.yml†L1-L78】
+2. **Ужесточение namespace** — `allow_userns` открывает монтирование AUFS в rootless-сценариях. Управляем политикой деплоя и аудитом перед релизом.【F:fs/aufs/module.c†L148-L213】【F:docs/ADMIN.md†L1-L24】
+3. **Отключённые фичи (nested mounts, stats)** — в aufs6 ряд возможностей выключен; Aya не должна на них полагаться без явного возвращения кодовых путей.【F:Documentation/filesystems/aufs/README†L82-L108】
+4. **Паритет с overlayfs** — базовые тесты overlayfs падают в контейнере из-за ограничений; нужно гарантировать, что раннеры CI разрешают overlayfs для сбора сравнений.【F:logs/testplan-smoke.log†L1-L13】
 
-## Work Plan (Go Path)
+## План работ (ветка Go)
 
-1. **Finalize CI** — land GitHub workflow, verify archives resolve, and publish `.ko` artefacts for all kernel/compiler combinations.【F:.github/workflows/build.yml†L1-L78】
-2. **Execute TESTPLAN** — run xfstests + custom workloads on Aya hardware; capture perf telemetry and soak logs in `logs/`.【F:TESTPLAN.md†L1-L120】
-3. **LayerControl integration** — wire `unionctl` into Aya initramfs scripts per `AYA-INTEGRATION.md`; validate snapshot promotion and failure paths.【F:AYA-INTEGRATION.md†L1-L76】
-4. **Documentation polish** — keep `docs/ADMIN.md` aligned with measured safe defaults; extend with sysfs telemetry once counters are collected.【F:docs/ADMIN.md†L1-L24】
+1. **Финализировать CI** — добавить workflow GitHub, проверить доступность архивов и выкладывать `.ko` для всех комбинаций ядро/компилятор.【F:.github/workflows/build.yml†L1-L78】
+2. **Выполнить TESTPLAN** — прогнать xfstests и кастомные нагрузки на железе Aya; собрать perf-телеметрию и soak-логи в `logs/`.【F:TESTPLAN.md†L1-L120】
+3. **Интегрировать LayerControl** — внедрить `unionctl` в initramfs-скрипты Aya по `AYA-INTEGRATION.md`; проверить повышение снапшотов и аварийные пути.【F:AYA-INTEGRATION.md†L1-L76】
+4. **Уточнить документацию** — поддерживать `docs/ADMIN.md` в актуальном состоянии с безопасными дефолтами; расширить секцией о sysfs после сбора счётчиков.【F:docs/ADMIN.md†L1-L24】
 
-## Decision
+## Решение
 
-**Go**, provided that the CI jobs remain green and the forthcoming validation completes without regressions. The tooling and documentation added in this cycle close the previous operational gaps and reduce the risk of switching Aya OS images between AUFS and overlayfs.【F:ANALYSIS.md†L1-L74】【F:AYA-INTEGRATION.md†L1-L76】
+**Go**, при условии зелёных CI и прохождения валидации без регрессий. Добавленный инструментарий и документация закрывают прежние пробелы и снижают риск переключения образов Aya OS между AUFS и overlayfs.【F:ANALYSIS.md†L1-L110】【F:AYA-INTEGRATION.md†L1-L76】
