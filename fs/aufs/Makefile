@@ -8,8 +8,10 @@ endif
 
 ccflags-y += ${EXTRA_CFLAGS}
 # cf. include/linux/kernel.h
-# enable pr_debug
+# enable pr_debug when requested
+ifeq (${CONFIG_AUFS_DEBUG},y)
 ccflags-y += -DDEBUG
+endif
 # sparse requires the full pathname
 ifdef M
 ccflags-y += -include ${M}/../../include/uapi/linux/aufs_type.h
