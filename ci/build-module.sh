@@ -12,20 +12,19 @@ GIT_REPO=${KERNEL_GIT_REPO:-}
 GIT_REF=${KERNEL_GIT_REF:-}
 
 workdir=$(mktemp -d)
-cleanup() {
-  rm -rf "${workdir}"
-}
+cleanup() { rm -rf "${workdir}"; }
 trap cleanup EXIT
 
 fetch_kernel() {
   local dest=$1
+  mkdir -p "${dest}"
   if [[ -n "${ARCHIVE_CANDIDATES}" ]]; then
     local url
     for url in ${ARCHIVE_CANDIDATES}; do
       echo "::group::Downloading ${url}"
       if curl -fsSL "${url}" -o "${dest}/kernel.tar.xz"; then
         echo "::endgroup::"
-        tar -xf "${dest}/kernel.tar.xz" -C "${dest}"
+        tar -C "${dest}" -xf "${dest}/kernel.tar.xz"
         local top
         top=$(tar -tf "${dest}/kernel.tar.xz" | head -1 | cut -d/ -f1)
         echo "${dest}/${top}"
@@ -48,20 +47,9 @@ fetch_kernel() {
   return 1
 }
 
-prepare_kernel() {
-  local tree=$1
-  pushd "${tree}" >/dev/null
-  make mrproper
-  make "${KERNEL_CONFIG}"
-  make modules_prepare
-  popd >/dev/null
-}
-
 apply_patches() {
   local tree=$1
-  if [[ -z "${PATCH_SERIES}" ]]; then
-    return
-  fi
+  [[ -z "${PATCH_SERIES}" ]] && return 0
   pushd "${tree}" >/dev/null
   for patch in ${PATCH_SERIES}; do
     echo "::group::Applying ${patch}"
@@ -71,12 +59,31 @@ apply_patches() {
   popd >/dev/null
 }
 
+prepare_kernel() {
+  local tree=$1
+  pushd "${tree}" >/dev/null
+  make mrproper
+  make "${KERNEL_CONFIG}"
+  make modules_prepare
+  popd >/dev/null
+}
+
 setup_compiler() {
   if [[ "${COMPILER}" == "clang" ]]; then
     export LLVM=1
     export CC=clang
     export LD=ld.lld
+  else
+    unset LLVM || true
+    export CC=gcc
   fi
+}
+
+build_aufs_module() {
+  local tree=$1
+  # AUFS как внешний модуль: строго против KDIR=tree
+  make -C "${tree}" M="${REPO_ROOT}/fs/aufs" clean
+  make -C "${tree}" M="${REPO_ROOT}/fs/aufs" modules
 }
 
 main() {
@@ -87,11 +94,8 @@ main() {
   prepare_kernel "${tree}"
 
   mkdir -p "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}"
-  pushd "${REPO_ROOT}" >/dev/null
-  KDIR="${tree}" make clean
-  KDIR="${tree}" make all
-  cp fs/aufs/aufs.ko "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/aufs.ko"
-  popd >/dev/null
+  build_aufs_module "${tree}"
+  cp "${REPO_ROOT}/fs/aufs/aufs.ko" "${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/aufs.ko"
 
   cat <<JSON >"${ARTIFACT_ROOT}/${KERNEL_ID}/${COMPILER}/build.json"
 {
