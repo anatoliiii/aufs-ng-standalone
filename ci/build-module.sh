@@ -26,30 +26,29 @@ fetch_kernel() {
   if [[ ${#ARCHIVE_CANDIDATES[@]} -gt 0 ]]; then
     local url
     for url in "${ARCHIVE_CANDIDATES[@]}"; do
-      # Trim whitespace
       url=$(echo "$url" | xargs)
       [[ -z "$url" ]] && continue
-      echo "::group::Downloading ${url}"
+      echo "::group::Downloading ${url}" >&2
       if curl -fsSL "${url}" -o "${dest}/kernel.tar.xz"; then
-        echo "::endgroup::"
+        echo "::endgroup::" >&2
         tar -xf "${dest}/kernel.tar.xz" -C "${dest}"
         local top
         top=$(tar -tf "${dest}/kernel.tar.xz" | head -n1 | cut -d/ -f1)
-        echo "${dest}/${top}"
+        echo "${dest}/${top}"  # <-- ONLY this goes to stdout
         return 0
       fi
       echo "::warning title=Download failed::${url}" >&2
-      echo "::endgroup::"
+      echo "::endgroup::" >&2
     done
     echo "::error title=Kernel archive not found::tried ${ARCHIVE_CANDIDATES[*]}" >&2
     return 1
   fi
 
   if [[ -n "${GIT_REPO}" ]]; then
-    echo "::group::Cloning ${GIT_REPO}@${GIT_REF}"
+    echo "::group::Cloning ${GIT_REPO}@${GIT_REF}" >&2
     git clone --depth 1 --branch "${GIT_REF}" "${GIT_REPO}" "${dest}/kernel"
-    echo "::endgroup::"
-    echo "${dest}/kernel"
+    echo "::endgroup::" >&2
+    echo "${dest}/kernel"  # <-- ONLY this goes to stdout
     return 0
   fi
 
