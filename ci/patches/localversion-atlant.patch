@@ -1,10 +1,7 @@
-diff --git a/Makefile b/Makefile
---- a/Makefile
-+++ b/Makefile
-@@ -1,4 +1,5 @@
- VERSION = 6
- PATCHLEVEL = 17
- SUBLEVEL = 3
- EXTRAVERSION =
-+LOCALVERSION += -atlant
-
+diff --git a/localversion-atlant b/localversion-atlant
+new file mode 100644
+index 000000000000..b8cc960ab6a3
+--- /dev/null
++++ b/localversion-atlant
+@@ -0,0 +1 @@
++-atlant
